@@ -39,7 +39,7 @@ An APK signed with a new key cannot replace a debug APK or another maintainer's 
 
 ## GitHub release
 
-1. Create your repository and set its remote. This checkout originated from `himphen/Developer-Options-Toggle`; do not push new releases to upstream.
+1. Use the `shivexe/devswitch` repository, or configure your own remote when maintaining a fork.
 2. Configure the Android secrets. Optionally set repository variable `ANDROID_VERSION_CODE_BASE` (default `100`) so base + workflow run number exceeds previously distributed version codes.
 3. Update `VERSION` and the changelog. Commit the source, then push a matching tag such as `v0.3.0` when ready to release.
 4. The workflow builds the signed APK and ad-hoc signed universal Mac ZIP, generates `SHA256SUMS`, and creates a **draft** release after both builds succeed.
