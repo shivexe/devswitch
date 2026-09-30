@@ -11,7 +11,7 @@ Requires macOS 14+. Wireless control requires Android 11+; automatic port update
    brew install --cask android-platform-tools
    brew install scrcpy
    ```
-2. Download the APK and Mac ZIP from this repository's **Releases**. Move `DevSwitch.app` to Applications and install the APK on your phone. The Mac app is ad-hoc signed, not notarized: after attempting to open it, use **System Settings → Privacy & Security → Open Anyway** if blocked.
+2. Download the APK and Mac ZIP from [Releases](https://github.com/shivexe/devswitch/releases). Move `DevSwitch.app` to Applications and install the APK on your phone. The Mac app is ad-hoc signed, not notarized: after attempting to open it, use **System Settings → Privacy & Security → Open Anyway** if blocked.
 3. Enable USB debugging, connect the phone once, accept the authorization prompt, then run:
    ```sh
    adb shell pm grant com.himphen.playground.developeroptionstoggle android.permission.WRITE_SECURE_SETTINGS
