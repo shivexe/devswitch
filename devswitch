@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+case "${1:-help}" in
+  doctor)
+    command -v swiftc >/dev/null || { echo 'Install Xcode Command Line Tools: xcode-select --install' >&2; exit 1; }
+    mkdir -p mac/build
+    swiftc mac/Dependencies.swift scripts/Doctor.swift -o mac/build/devswitch-doctor
+    exec mac/build/devswitch-doctor
+    ;;
+  build) exec ./mac/build.sh ;;
+  *) echo 'Usage: ./devswitch doctor | build'; [[ "${1:-help}" == help ]] ;;
+esac

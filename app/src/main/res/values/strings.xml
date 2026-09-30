@@ -1,0 +1,38 @@
+<resources>
+    <string name="app_name">DevSwitch</string>
+    <string name="app_tagline">Control developer settings without digging through system menus.</string>
+    <string name="status_title">Current status</string>
+    <string name="status_enabled">Developer options are enabled</string>
+    <string name="status_disabled">Developer options are disabled</string>
+    <string name="status_on">ON</string>
+    <string name="status_off">OFF</string>
+    <string name="settings_section_title">Developer settings</string>
+    <string name="setting_developer_options">Developer options</string>
+    <string name="setting_developer_options_description">Master switch for Android developer settings.</string>
+    <string name="setting_usb_debugging">USB debugging</string>
+    <string name="setting_usb_debugging_description">Allow ADB connections over USB.</string>
+    <string name="setting_wifi_debugging">Wi-Fi debugging</string>
+    <string name="setting_wifi_debugging_description">Allow ADB connections over Wi-Fi.</string>
+    <string name="setting_requires_developer_options">Enable Developer options first.</string>
+    <string name="open_system_settings">Open system settings</string>
+    <string name="open_system_settings_description">Manage additional developer settings in Android Settings.</string>
+    <string name="privacy_disclaimer">Use this app only on devices you own or administer. It changes secure Android settings.</string>
+    <string name="permission_title">ADB permission required</string>
+    <string name="permission_message">Grant WRITE_SECURE_SETTINGS once with ADB to enable these controls. This is a special permission and cannot be granted from the normal Android permission screen.</string>
+    <string name="permission_command" translatable="false">adb shell pm grant com.himphen.playground.developeroptionstoggle android.permission.WRITE_SECURE_SETTINGS</string>
+    <string name="permission_icon_description">Permission warning</string>
+    <string name="error_title">Action unavailable</string>
+    <string name="error_read_settings">The current setting could not be read. Check the ADB permission and try again.</string>
+    <string name="error_write_settings">The setting could not be changed. Check the ADB permission and try again.</string>
+    <string name="error_permission_required">The ADB permission is missing or was revoked. Grant it again and retry.</string>
+    <string name="error_system_settings_unavailable">Android system settings could not be opened on this device.</string>
+    <string name="error_icon_description">Action error</string>
+    <string name="retry">Retry</string>
+    <string name="widget_toggle_description">A dark widget to quickly toggle Developer options.</string>
+    <string name="widget_shortcut_description">A dark shortcut to the Developer options system screen.</string>
+    <string name="widget_toggle_label">Developer options</string>
+    <string name="widget_shortcut_label">Developer settings</string>
+    <string name="widget_on">ON</string>
+    <string name="widget_off">OFF</string>
+    <string name="widget_unavailable">UNAVAILABLE</string>
+</resources>

@@ -1,0 +1,107 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      code: ${{ steps.version.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION_CODE_BASE: ${{ vars.ANDROID_VERSION_CODE_BASE || '100' }}
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use vMAJOR.MINOR.PATCH'; exit 1; }
+          [[ "$version" == "$(cat VERSION)" ]] || { echo 'Tag must match VERSION'; exit 1; }
+          [[ "$VERSION_CODE_BASE" =~ ^[0-9]{1,9}$ ]] || { echo 'Invalid ANDROID_VERSION_CODE_BASE'; exit 1; }
+          code=$((10#$VERSION_CODE_BASE + GITHUB_RUN_NUMBER))
+          ((code > 0 && code <= 2100000000)) || exit 1
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+  android:
+    needs: metadata
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_VERSION_NAME: ${{ needs.metadata.outputs.version }}
+      ANDROID_VERSION_CODE: ${{ needs.metadata.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platform-tools' 'platforms;android-37.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build signed Android release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          for name in ANDROID_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            [[ -n "${!name}" ]] || { echo "Missing signing secret: $name"; exit 1; }
+          done
+          umask 077
+          trap 'rm -f "$RELEASE_KEYSTORE_PATH"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RELEASE_KEYSTORE_PATH"
+          ./gradlew :app:assembleRelease --stacktrace
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/DevSwitch-$ANDROID_VERSION_NAME-android.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: dist/*.apk
+          if-no-files-found: error
+  mac:
+    needs: metadata
+    runs-on: macos-latest
+    env:
+      DEVSWITCH_VERSION: ${{ needs.metadata.outputs.version }}
+      DEVSWITCH_BUILD_NUMBER: ${{ needs.metadata.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/package-mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: dist/*.zip
+          if-no-files-found: error
+  publish:
+    needs: [metadata, android, mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-release'
+          merge-multiple: true
+          path: dist
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.apk *.zip > SHA256SUMS
+          gh release create "$RELEASE_TAG" *.apk *.zip SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "DevSwitch $RELEASE_VERSION" --generate-notes
