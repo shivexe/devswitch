@@ -12,7 +12,9 @@ Pairing uses a five-minute QR invitation and a six-digit comparison. Commands an
 
 Wireless ADB has separate Android authorization. The phone discovers its ADB address and sends it over the companion connection. Android 14+ subscribes to port updates. The Mac verifies the Android serial against its saved pairing before starting the separately installed scrcpy executable. Legacy unpaired TCP debugging on port 5555 is not used.
 
-The phone remembers the Mac's private IPv4 address; automatic Mac rediscovery is not implemented. Clocks must agree within 30 seconds. Foreground operation does not bypass Android Doze or manufacturer battery management.
+After an authenticated exchange, both apps prefer IPv6 link-local addresses on the same Wi-Fi interface. This avoids duplicate IPv4 addresses breaking the companion and screen connections. Android remembers the Mac's authenticated IPv6 address alongside its original IPv4 address and falls back to IPv4 when needed. Interface scope IDs are resolved locally, not copied between devices. Android uses a bounded HTTP socket for scoped IPv6 URLs, with the same encrypted protocol.
+
+Automatic Mac rediscovery is not implemented. If both saved addresses change, pair again. Clocks must agree within 30 seconds. Foreground operation does not bypass Android Doze or manufacturer battery management.
 
 ## Source map
 

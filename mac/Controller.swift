@@ -17,11 +17,12 @@ struct Hello: Codable { let deviceId: String; let deviceName: String; let client
 struct Accepted: Codable { let deviceId: String; let key: String; let desktopName: String }
 struct PhoneStatus: Codable, Equatable {
     let developer: Bool; let usb: Bool; let wifi: Bool; let permission: Bool; let wifiEndpoint: String?
+    let lanIPv4: String?; let wifiIPv6Endpoint: String?
 }
 struct Receipt: Codable { let id: String; let ok: Bool; let message: String }
 struct Poll: Codable { let requestId: String; let sentAt: Int64; let status: PhoneStatus; let receipt: Receipt? }
 struct Command: Codable { let id: String; let action: String; let expiresAt: Int64 }
-struct Reply: Codable { let requestId: String; let command: Command? }
+struct Reply: Codable { let requestId: String; let command: Command?; let desktopIPv6: String? }
 
 @MainActor
 final class Controller: ObservableObject {
@@ -138,6 +139,9 @@ final class Controller: ObservableObject {
             // Non-secret diagnostics for local connection troubleshooting.
             UserDefaults.standard.set(poll.status.wifiEndpoint ?? "", forKey: "connection.phoneEndpoint")
             UserDefaults.standard.set(lastSeen.timeIntervalSince1970, forKey: "connection.lastSeen")
+            UserDefaults.standard.set(request.remoteHost?.contains(":") == true ? "IPv6" : "IPv4", forKey: "connection.transport")
+            UserDefaults.standard.set(LocalNetwork.link(for: poll.status.lanIPv4)?.host ?? "", forKey: "connection.desktopIPv6")
+            UserDefaults.standard.set(LocalNetwork.phoneEndpoint(poll.status) ?? "", forKey: "connection.phoneIPv6Endpoint")
             if !online { online = true }
             if let receipt = poll.receipt, let command = pending, receipt.id == command.id {
                 let matches = command.action == "enable"
@@ -147,7 +151,8 @@ final class Controller: ObservableObject {
                 pending = nil
             }
             if let pending, pending.expiresAt < Int64(Date().timeIntervalSince1970) { self.pending = nil }
-            return try .json(200, SyncCrypto.seal(Reply(requestId: poll.requestId, command: pending), key: phone.key, aad: "devswitch/reply/v1/\(phone.id)"))
+            return try .json(200, SyncCrypto.seal(Reply(requestId: poll.requestId, command: pending,
+                desktopIPv6: LocalNetwork.link(for: poll.status.lanIPv4)?.host), key: phone.key, aad: "devswitch/reply/v1/\(phone.id)"))
         } catch { return HTTPResponse(400) }
     }
     private func pair(_ request: HTTPRequest) throws -> HTTPResponse {

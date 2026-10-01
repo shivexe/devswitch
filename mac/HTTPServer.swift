@@ -5,6 +5,7 @@ import Network
 struct HTTPRequest {
     let path: String
     let body: Data
+    var remoteHost: String? = nil
 }
 
 struct HTTPResponse {
@@ -73,7 +74,8 @@ final class HTTPServer {
                 var bytes = bytes
                 if let data { bytes.append(data) }
                 do {
-                    if let request = try Self.parse(bytes) {
+                    if var request = try Self.parse(bytes) {
+                        if case let .hostPort(host, _) = connection.endpoint { request.remoteHost = "\(host)" }
                         self.respond(self.handler(request), connection: connection, id: id)
                     } else if complete || error != nil { self.finish(connection, id: id) }
                     else { self.receive(connection, id: id, bytes: bytes) }

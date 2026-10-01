@@ -8,6 +8,9 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -55,6 +58,13 @@ object Protocol {
         val uri = URI(value)
         require(uri.scheme == "http" && uri.userInfo == null && uri.query == null && uri.fragment == null &&
             (uri.path.isNullOrEmpty() || uri.path == "/") && uri.port in 1..65535)
+        val host = uri.host ?: ""
+        if (host.startsWith('[') && host.endsWith(']')) {
+            val scoped = host.drop(1).dropLast(1).split('%')
+            require(scoped.size == 2 && LocalLink.isLinkLocal(scoped[0]) &&
+                scoped[1].isNotEmpty() && scoped[1].all { it in '0'..'9' })
+            return uri
+        }
         val parts = (uri.host ?: "").split('.')
         require(parts.size == 4 && parts.all { it.isNotEmpty() && it.all(Char::isDigit) && (it.toIntOrNull() ?: -1) in 0..255 })
         val p = parts.map(String::toInt)
@@ -63,6 +73,7 @@ object Protocol {
     }
     fun post(origin: String, path: String, payload: JSONObject): Pair<Int, JSONObject> {
         val uri = origin(origin)
+        if (uri.host.startsWith('[')) return postLinkLocal(uri, path, payload)
         val connection = uri.resolve(path).toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
@@ -88,6 +99,62 @@ object Protocol {
             }
             return code to JSONObject(buffer.toString("UTF-8").ifEmpty { "{}" })
         } finally { connection.disconnect() }
+    }
+
+    // Android's HttpURLConnection rejects IPv6 zone IDs. Use a scoped socket for
+    // this local-only HTTP transport; payload authentication/encryption is unchanged.
+    private fun postLinkLocal(uri: URI, path: String, payload: JSONObject): Pair<Int, JSONObject> {
+        require(path.startsWith('/') && path.length <= 160 && path.none { it <= ' ' || it == '\u007f' })
+        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+        require(bytes.size <= 32768)
+        val address = InetAddress.getByName(uri.host.drop(1).dropLast(1))
+        require(address.isLinkLocalAddress)
+        return Socket().use { socket ->
+            socket.soTimeout = 4000
+            socket.connect(InetSocketAddress(address, uri.port), 4000)
+            val header = "POST $path HTTP/1.1\r\nHost: ${uri.rawAuthority}\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            socket.getOutputStream().apply {
+                write(header.toByteArray(Charsets.US_ASCII)); write(bytes); flush()
+            }
+            val input = socket.getInputStream().buffered()
+            var headerSize = 0
+            fun line(): String {
+                val output = ByteArrayOutputStream()
+                while (true) {
+                    val value = input.read()
+                    check(value >= 0 && ++headerSize <= 16384) { "Incomplete or oversized HTTP header" }
+                    if (value == 10) {
+                        val data = output.toByteArray()
+                        check(data.isNotEmpty() && data.last() == 13.toByte()) { "Invalid HTTP header" }
+                        return String(data, 0, data.size - 1, Charsets.US_ASCII)
+                    }
+                    output.write(value)
+                }
+            }
+            val status = line().split(' ', limit = 3)
+            check(status.size >= 2 && status[0] == "HTTP/1.1") { "Invalid HTTP response" }
+            val code = status[1].toInt()
+            val headers = mutableMapOf<String, String>()
+            while (true) {
+                val value = line()
+                if (value.isEmpty()) break
+                val colon = value.indexOf(':')
+                check(colon > 0 && !value.startsWith(' ') && !value.startsWith('\t'))
+                val name = value.substring(0, colon).lowercase(java.util.Locale.ROOT)
+                check(headers.put(name, value.substring(colon + 1).trim()) == null) { "Duplicate HTTP header" }
+            }
+            check("transfer-encoding" !in headers)
+            val length = headers["content-length"]?.toIntOrNull() ?: error("Missing HTTP length")
+            check(length in 0..32768) { "Response too large" }
+            val body = ByteArray(length)
+            var offset = 0
+            while (offset < length) {
+                val count = input.read(body, offset, length - offset)
+                check(count > 0) { "Incomplete HTTP response" }
+                offset += count
+            }
+            code to JSONObject(String(body, Charsets.UTF_8).ifEmpty { "{}" })
+        }
     }
 }
 

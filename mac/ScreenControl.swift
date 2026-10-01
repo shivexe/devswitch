@@ -44,7 +44,17 @@ final class ScreenControl: ObservableObject {
         lastEndpoint = defaults.string(forKey: "screen.endpoint") ?? ""
     }
     func isPaired(_ phoneID: String?) -> Bool { phoneID != nil && pairedPhoneID == phoneID && !serial.isEmpty }
-    static func endpoint(_ text: String) -> (host: String, port: Int)? {
+    nonisolated static func endpoint(_ text: String) -> (host: String, port: Int)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("["), let end = trimmed.firstIndex(of: "]") {
+            let host = String(trimmed[trimmed.index(after: trimmed.startIndex)..<end])
+            let parts = host.components(separatedBy: "%")
+            let suffix = trimmed[trimmed.index(after: end)...]
+            guard parts.count <= 2, LocalNetwork.isLinkLocal(parts[0]),
+                  parts.count == 1 || (!parts[1].isEmpty && parts[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })),
+                  suffix.hasPrefix(":"), let port = Int(suffix.dropFirst()), (1...65535).contains(port) else { return nil }
+            return ("[\(host)]", port)
+        }
         let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2, let port = Int(parts[1]), (1...65535).contains(port) else { return nil }
         let ip = parts[0].split(separator: ".", omittingEmptySubsequences: false)
@@ -178,22 +188,50 @@ final class ScreenControl: ObservableObject {
                 }
                 // Android reuses the Bonjour service name while assigning a new TLS port.
                 // A fresh resolve is required even if no remove/add event was delivered.
-                if controller.status?.wifiEndpoint == nil { discovery.refresh() }
+                if Self.endpoint(controller.status?.wifiEndpoint ?? "") == nil { discovery.refresh() }
                 try await Task.sleep(nanoseconds: 1_000_000_000)
                 var selected: String?
+                var connectionFailure: String?
+                @MainActor func connect(_ endpoint: String, fallbackAvailable: Bool = false) async throws -> Bool {
+                    try Task.checkCancellation()
+                    let result = try await adbRun(["connect", endpoint], timeout: 5)
+                    try Task.checkCancellation()
+                    let output = result.output.lowercased()
+                    // adb connect can exit successfully even when the connection failed.
+                    if output.contains("failed") || output.contains("cannot") || result.code != 0 {
+                        if output.contains("authenticate") || output.contains("unauthorized") {
+                            throw AppError.message("Android rejected wireless authorization. Pair Wireless control again in Connection settings.")
+                        }
+                        if !fallbackAvailable && (output.contains("no route to host") || output.contains("permission denied") || output.contains("operation not permitted")) {
+                            throw AppError.message("ADB cannot reach your phone. Check Mac Local Network access for DevSwitch and the app that started ADB, and confirm both devices use the same Wi-Fi. Your pairing is still saved.")
+                        }
+                        connectionFailure = "Found your phone, but ADB could not connect: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240)). Retry after checking Wireless debugging on the phone."
+                        return false
+                    }
+                    guard try await property("ro.serialno", device: endpoint) == serial else {
+                        connectionFailure = "ADB connected, but could not verify your paired phone. Check that the phone is online and retry."
+                        return false
+                    }
+                    lastEndpoint = endpoint
+                    defaults.set(endpoint, forKey: "screen.endpoint")
+                    return true
+                }
                 for _ in 0..<8 {
                     try Task.checkCancellation()
-                    for device in try await connectedDevices() {
+                    // Prefer the authenticated, directly attached IPv6 address. An IPv4
+                    // conflict must not steal an otherwise healthy screen connection.
+                    if let ipv6 = LocalNetwork.phoneEndpoint(controller.status), try await connect(ipv6, fallbackAvailable: true) {
+                        selected = ipv6; break
+                    }
+                    let devices = try await connectedDevices().sorted { $0.hasPrefix("[") && !$1.hasPrefix("[") }
+                    for device in devices {
                         if try await property("ro.serialno", device: device) == serial { selected = device; break }
                     }
                     if selected != nil { break }
-                    if let reported = controller.status?.wifiEndpoint {
-                        if Self.endpoint(reported) != nil {
-                            message = "Connecting to your phone over Wi-Fi…"
-                            _ = try await adbRun(["connect", reported], timeout: 5)
-                            if try await property("ro.serialno", device: reported) == serial {
-                                selected = reported; lastEndpoint = reported; break
-                            }
+                    if let reported = controller.status?.wifiEndpoint, Self.endpoint(reported) != nil {
+                        message = "Connecting to your phone over Wi-Fi…"
+                        if try await connect(reported) {
+                            selected = reported; break
                         }
                         message = "Waiting for your phone's wireless connection…"
                         try await Task.sleep(nanoseconds: 2_000_000_000)
@@ -201,20 +239,18 @@ final class ScreenControl: ObservableObject {
                     }
                     let candidates = try await services().filter { $0.name.hasPrefix("adb-\(serial)-") }
                     for candidate in candidates {
-                        _ = try await adbRun(["connect", candidate.endpoint], timeout: 5)
-                        if try await property("ro.serialno", device: candidate.endpoint) == serial {
-                            selected = candidate.endpoint; lastEndpoint = candidate.endpoint; break
+                        if try await connect(candidate.endpoint) {
+                            selected = candidate.endpoint; break
                         }
                     }
                     if selected != nil { break }
                     if candidates.isEmpty && !lastEndpoint.isEmpty {
-                        _ = try await adbRun(["connect", lastEndpoint], timeout: 4)
-                        if try await property("ro.serialno", device: lastEndpoint) == serial { selected = lastEndpoint; break }
+                        if try await connect(lastEndpoint) { selected = lastEndpoint; break }
                     }
                     discovery.refresh()
                     try await Task.sleep(nanoseconds: 1_000_000_000)
                 }
-                guard let selected else { throw AppError.message((controller.status?.wifiEndpoint == nil ? discovery.failure : nil) ?? "Could not find the phone's current wireless connection. Keep both devices on the same Wi-Fi and retry Control phone. Your saved pairing has not been removed.") }
+                guard let selected else { throw AppError.message(connectionFailure ?? discovery.failure ?? "Could not find the phone's current wireless connection. Keep both devices on the same Wi-Fi and retry Control phone. Your saved pairing has not been removed.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
                 let process = Process()

@@ -42,12 +42,17 @@ class RemoteService : Service() {
     private fun status(): JSONObject {
         val wifi = Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1
         wireless.update(wifi)
+        val link = LocalLink.current(this)
+        val port = wireless.endpoint.substringAfterLast(':', "").toIntOrNull()
         return JSONObject()
         .put("developer", Settings.Global.getInt(contentResolver, "development_settings_enabled", 0) == 1)
         .put("usb", Settings.Global.getInt(contentResolver, "adb_enabled", 0) == 1)
         .put("wifi", Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1)
         .put("permission", checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED)
         .put("wifiEndpoint", if (wifi) wireless.endpoint else "")
+        .put("lanIPv4", link?.ipv4 ?: "")
+        .put("wifiIPv6Endpoint", if (wifi && link?.ipv6 != null && port != null &&
+            wireless.endpoint.substringBefore(':') == link.ipv4) "[${link.ipv6}]:$port" else "")
     }
     private fun loop() {
         try {
@@ -55,16 +60,28 @@ class RemoteService : Service() {
             val id = pairing.getString("deviceId")
             val key = Protocol.decode(pairing.getString("key"), 32)
             val url = pairing.getString("url")
+            var desktopIPv6 = pairing.optString("desktopIPv6", "")
+            var useIPv6 = true
             while (running) {
                 try {
                     val requestId = Protocol.encode(Protocol.bytes(32))
                     val request = JSONObject().put("requestId", requestId).put("sentAt", System.currentTimeMillis() / 1000).put("status", status())
                     receipt?.let { request.put("receipt", it) }
                     val envelope = Protocol.seal(request, key, "devswitch/poll/v1/$id").put("deviceId", id)
-                    val (code, response) = Protocol.post(url, "/v1/poll", envelope)
+                    val ipv6Url = LocalLink.origin(this, desktopIPv6, Protocol.origin(url).port)
+                    val target = if (useIPv6 && ipv6Url != null) ipv6Url else url
+                    val (code, response) = Protocol.post(target, "/v1/poll", envelope)
                     check(code == 200) { "Mac unavailable" }
                     val reply = Protocol.open(response, key, "devswitch/reply/v1/$id")
                     check(reply.getString("requestId") == requestId) { "Response does not match" }
+                    // Learn an alternate address only from the authenticated paired Mac.
+                    val offered = reply.optString("desktopIPv6", "")
+                    if (LocalLink.isLinkLocal(offered) && offered != desktopIPv6) {
+                        desktopIPv6 = offered
+                        pairing.put("desktopIPv6", offered)
+                        PairStore.save(this, pairing)
+                    }
+                    useIPv6 = true
                     if (!running) break
                     connectionState = "Connected to ${pairing.getString("desktopName")}"
                     val command = reply.optJSONObject("command")
@@ -73,7 +90,11 @@ class RemoteService : Service() {
                         val now = System.currentTimeMillis() / 1000
                         if (expiry in now..(now + 30)) execute(command)
                     }
-                } catch (_: Exception) { if (running) connectionState = "Waiting for your Mac on the same Wi-Fi" }
+                } catch (error: Exception) {
+                    android.util.Log.w("DevSwitchConnection", "${if (useIPv6 && desktopIPv6.isNotEmpty()) "IPv6" else "IPv4"}: ${error.javaClass.simpleName}: ${error.message?.take(160)}")
+                    useIPv6 = !useIPv6
+                    if (running) connectionState = "Waiting for your Mac on the same Wi-Fi"
+                }
                 try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
             }
         } catch (_: Exception) { connectionState = "Pair your Mac again" }

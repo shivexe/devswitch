@@ -74,7 +74,9 @@ Terminal launches also accept `DEVSWITCH_ADB` and `DEVSWITCH_SCRCPY`, which over
 | Phone offline | Open its app, resume Mac control, and check Wi-Fi and background restrictions. |
 | Mac IP changed | Pair DevSwitch again. A DHCP reservation keeps the Mac address stable. |
 | Wireless connection missing | Confirm Android allowed your Wi-Fi network; keep the companion running. Android 14+ tracks port changes. Older versions may require reopening the companion. |
+| Connections drop because another device uses the phone's IPv4 address | Updated apps prefer authenticated IPv6 link-local connections when available on the same Wi-Fi. The router's duplicate IPv4 assignment can still affect other apps. |
 | Wireless authorization expired | Pair wireless control again. |
+| ADB cannot reach the phone | Check Mac Local Network access for DevSwitch and the app that started ADB. Connection errors are reported separately from discovery failures. |
 | Tool missing or cannot launch | Run the doctor; update or configure the reported executable. |
 | Settings permission missing | Repeat the USB grant. Some manufacturers restrict this permission. |
 | Black screen in one app | That app may prohibit screen capture. |
