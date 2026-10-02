@@ -6,7 +6,7 @@ import android.net.NetworkCapabilities
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.NetworkInterface
+import android.system.Os
 
 object LocalLink {
     data class Link(val ipv4: String, val ipv6: String?, val index: Int)
@@ -14,12 +14,16 @@ object LocalLink {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         for (network in manager.allNetworks) {
             if (manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) continue
-            val name = manager.getLinkProperties(network)?.interfaceName ?: continue
-            val iface = NetworkInterface.getByName(name) ?: continue
-            val addresses = iface.inetAddresses.toList()
+            val properties = manager.getLinkProperties(network) ?: continue
+            val name = properties.interfaceName ?: continue
+            // getByName enumerates every interface on Android and can stall the heartbeat.
+            // LinkProperties already contains this Wi-Fi network's addresses.
+            val index = Os.if_nametoindex(name)
+            if (index <= 0) continue
+            val addresses = properties.linkAddresses.map { it.address }
             val ipv4 = addresses.filterIsInstance<Inet4Address>().firstOrNull { it.isSiteLocalAddress }?.hostAddress ?: continue
             val ipv6 = addresses.filterIsInstance<Inet6Address>().firstOrNull { it.isLinkLocalAddress }?.hostAddress?.substringBefore('%')
-            return Link(ipv4, ipv6, iface.index)
+            return Link(ipv4, ipv6, index)
         }
         return null
     }
@@ -28,9 +32,9 @@ object LocalLink {
             InetAddress.getByName(host).let { it is Inet6Address && it.isLinkLocalAddress }
     } catch (_: Exception) { false }
 
-    fun origin(context: Context, host: String, port: Int): String? {
+    fun origin(link: Link?, host: String, port: Int): String? {
         if (!isLinkLocal(host) || port !in 1..65535) return null
-        val link = current(context) ?: return null
+        if (link == null) return null
         return "http://[$host%${link.index}]:$port"
     }
 }

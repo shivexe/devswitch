@@ -6,6 +6,8 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import org.json.JSONObject
 
@@ -18,7 +20,28 @@ class RemoteService : Service() {
     private var worker: Thread? = null
     private var receipt: JSONObject? = null
     private lateinit var wireless: WirelessEndpoint
-    override fun onCreate() { super.onCreate(); wireless = WirelessEndpoint(this) }
+    private lateinit var connectionWakeLock: PowerManager.WakeLock
+    private var lastWakeRenewal = 0L
+    override fun onCreate() {
+        super.onCreate()
+        wireless = WirelessEndpoint(this)
+        connectionWakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DevSwitch:MacConnection")
+            .apply { setReferenceCounted(false) }
+    }
+    // A foreground service alone does not keep the polling thread running during CPU sleep.
+    // Renew only after authenticated replies; an absent Mac cannot hold the CPU indefinitely.
+    @Synchronized private fun renewConnectionWakeLock() {
+        if (!running) return
+        val now = SystemClock.elapsedRealtime()
+        if (!connectionWakeLock.isHeld || now - lastWakeRenewal >= 30000) {
+            connectionWakeLock.acquire(60000)
+            lastWakeRenewal = now
+        }
+    }
+    @Synchronized private fun releaseConnectionWakeLock() {
+        if (connectionWakeLock.isHeld) connectionWakeLock.release()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
@@ -39,10 +62,9 @@ class RemoteService : Service() {
         worker = Thread({ loop() }, "DevSwitch connection").also { it.start() }
         return START_STICKY
     }
-    private fun status(): JSONObject {
+    private fun status(link: LocalLink.Link?): JSONObject {
         val wifi = Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1
         wireless.update(wifi)
-        val link = LocalLink.current(this)
         val port = wireless.endpoint.substringAfterLast(':', "").toIntOrNull()
         return JSONObject()
         .put("developer", Settings.Global.getInt(contentResolver, "development_settings_enabled", 0) == 1)
@@ -62,16 +84,30 @@ class RemoteService : Service() {
             val url = pairing.getString("url")
             var desktopIPv6 = pairing.optString("desktopIPv6", "")
             var useIPv6 = true
+            var lastPoll = android.os.SystemClock.elapsedRealtime()
+            var lastUptime = android.os.SystemClock.uptimeMillis()
             while (running) {
+                val started = android.os.SystemClock.elapsedRealtime()
+                val uptime = android.os.SystemClock.uptimeMillis()
+                if (started - lastPoll > 10000) {
+                    val power = getSystemService(android.os.PowerManager::class.java)
+                    android.util.Log.w("DevSwitchConnection", "Heartbeat gap: elapsedMs=${started-lastPoll} awakeMs=${uptime-lastUptime} interactive=${power.isInteractive} idle=${power.isDeviceIdleMode}")
+                }
+                lastPoll = started; lastUptime = uptime
                 try {
+                    val link = LocalLink.current(this)
+                    val phoneStatus = status(link)
+                    val ipv6Url = LocalLink.origin(link, desktopIPv6, Protocol.origin(url).port)
+                    val prepared = android.os.SystemClock.elapsedRealtime()
+                    if (prepared - started > 1000) android.util.Log.w("DevSwitchConnection", "Slow status preparation: ${prepared-started}ms")
+                    // Timestamp only after local status preparation, immediately before sending.
                     val requestId = Protocol.encode(Protocol.bytes(32))
-                    val request = JSONObject().put("requestId", requestId).put("sentAt", System.currentTimeMillis() / 1000).put("status", status())
+                    val request = JSONObject().put("requestId", requestId).put("sentAt", System.currentTimeMillis() / 1000).put("status", phoneStatus)
                     receipt?.let { request.put("receipt", it) }
                     val envelope = Protocol.seal(request, key, "devswitch/poll/v1/$id").put("deviceId", id)
-                    val ipv6Url = LocalLink.origin(this, desktopIPv6, Protocol.origin(url).port)
                     val target = if (useIPv6 && ipv6Url != null) ipv6Url else url
                     val (code, response) = Protocol.post(target, "/v1/poll", envelope)
-                    check(code == 200) { "Mac unavailable" }
+                    check(code == 200) { "Mac returned HTTP $code" }
                     val reply = Protocol.open(response, key, "devswitch/reply/v1/$id")
                     check(reply.getString("requestId") == requestId) { "Response does not match" }
                     // Learn an alternate address only from the authenticated paired Mac.
@@ -83,6 +119,7 @@ class RemoteService : Service() {
                     }
                     useIPv6 = true
                     if (!running) break
+                    renewConnectionWakeLock()
                     connectionState = "Connected to ${pairing.getString("desktopName")}"
                     val command = reply.optJSONObject("command")
                     if (command != null && command.getString("id") != receipt?.optString("id")) {
@@ -98,7 +135,7 @@ class RemoteService : Service() {
                 try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
             }
         } catch (_: Exception) { connectionState = "Pair your Mac again" }
-        finally { running = false; stopSelf() }
+        finally { running = false; releaseConnectionWakeLock(); stopSelf() }
     }
     private fun execute(command: JSONObject) {
         var success = false
@@ -121,6 +158,7 @@ class RemoteService : Service() {
     }
     override fun onDestroy() {
         running = false; worker?.interrupt(); wireless.close(); connectionState = "Mac control paused"
+        releaseConnectionWakeLock()
         super.onDestroy()
     }
 }
