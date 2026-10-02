@@ -8,6 +8,8 @@ Mac menu bar ← encrypted local connection → Android companion
 
 The companion connection is independent of ADB, so it can turn debugging back on. Android polls the Mac on local TCP port 45874, applies fixed enable/disable actions, and returns settings readback. Enable switches on developer options, USB debugging, and wireless debugging; disable switches them off in reverse order and closes the mirror.
 
+Authenticated Mac replies renew a CPU-only wake lock every 30 seconds, keeping polling responsive with the screen off. It expires within 60 seconds of the last renewal when the Mac stops replying, and is released when Mac control stops. This uses extra battery while connected.
+
 Pairing uses a five-minute QR invitation and a six-digit comparison. Commands and status are AES-256-GCM encrypted and authenticated over local HTTP. Request IDs, timestamps, and command expiry reject stale/replayed traffic. Keys use Mac Keychain and Android Keystore; Android backup is disabled. Network metadata remains visible. The protocol has not had an independent security audit.
 
 Wireless ADB has separate Android authorization. The phone discovers its ADB address and sends it over the companion connection. Android 14+ subscribes to port updates. The Mac verifies the Android serial against its saved pairing before starting the separately installed scrcpy executable. Legacy unpaired TCP debugging on port 5555 is not used.

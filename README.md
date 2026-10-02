@@ -35,6 +35,6 @@ Source builds require Xcode Command Line Tools, JDK 17, and Android SDK 37. The 
 
 ## Notes
 
-Keep both devices on the same network. Battery restrictions can interrupt the phone connection; a changed Mac IP currently requires pairing DevSwitch again. Protected screens may not mirror. Payment-app compatibility depends on the app and phone.
+Keep both devices on the same network. Instant Mac control keeps the phone's CPU awake while connected, using extra battery; **Pause** in the phone notification stops it. Battery restrictions can still interrupt the connection. A changed Mac IP currently requires pairing DevSwitch again. Protected screens may not mirror. Payment-app compatibility depends on the app and phone.
 
 Based on [Developer Options Toggle](https://github.com/himphen/Developer-Options-Toggle). [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md).
