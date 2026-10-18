@@ -192,6 +192,7 @@ final class ScreenControl: ObservableObject {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
                 var selected: String?
                 var connectionFailure: String?
+                var restartedServer = false
                 @MainActor func connect(_ endpoint: String, fallbackAvailable: Bool = false) async throws -> Bool {
                     try Task.checkCancellation()
                     let result = try await adbRun(["connect", endpoint], timeout: 5)
@@ -199,6 +200,15 @@ final class ScreenControl: ObservableObject {
                     let output = result.output.lowercased()
                     // adb connect can exit successfully even when the connection failed.
                     if output.contains("failed") || output.contains("cannot") || result.code != 0 {
+                        // An ADB server started by another app keeps that app's Local Network
+                        // access. Restart it once so it runs under DevSwitch's permission.
+                        if output.contains("no route to host") && !restartedServer {
+                            restartedServer = true
+                            message = "Restarting ADB…"
+                            _ = try await adbRun(["kill-server"], timeout: 5)
+                            _ = try await adbRun(["start-server"], timeout: 10)
+                            return try await connect(endpoint, fallbackAvailable: fallbackAvailable)
+                        }
                         if output.contains("authenticate") || output.contains("unauthorized") {
                             throw AppError.message("Android rejected wireless authorization. Pair Wireless control again in Connection settings.")
                         }
