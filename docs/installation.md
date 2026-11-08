@@ -39,10 +39,12 @@ This connection controls developer settings even when ADB is off.
 
 1. Choose **Enable development** on the Mac.
 2. On Android, open **Settings → Developer options → Wireless debugging**. Allow your Wi-Fi network.
-3. Choose **Pair device with pairing code**. Keep this dialog open.
-4. In the Mac's **Connection settings**, enter that dialog's pairing IP:port and code under Wireless control.
-5. If asked to finish setup, close the code dialog and enter the connection IP:port from the main Wireless debugging page. These are different ports.
+3. In the Mac's **Connection settings**, choose **Show pairing QR code** under Wireless control.
+4. On Android, choose **Pair device with QR code** and scan it. The Mac finds the phone and pairs by itself.
+5. Without a camera, use **Pair device with pairing code** on Android and **Use pairing code instead** on the Mac. Type only the six digits; the Mac asks for the address only if it cannot find the phone within 20 seconds.
 6. Unplug USB and choose **Control phone**. Verify **Disable development → Control phone** reconnects.
+
+The companion turns off Android's 7-day expiry of ADB authorizations (`adb_allowed_connection_time = 0`), so wireless control keeps working after long gaps. To revoke the Mac, use **Developer options → Revoke USB debugging authorizations** or forget it under **Wireless debugging → Paired devices**.
 
 **Stop sharing** closes the mirror. **Disable development** also disables wireless debugging, USB debugging, and developer options. The individual Android switches change their named setting only.
 
@@ -75,7 +77,7 @@ Terminal launches also accept `DEVSWITCH_ADB` and `DEVSWITCH_SCRCPY`, which over
 | Mac IP changed | Pair DevSwitch again. A DHCP reservation keeps the Mac address stable. |
 | Wireless connection missing | Confirm Android allowed your Wi-Fi network; keep the companion running. Android 14+ tracks port changes. Older versions may require reopening the companion. |
 | Connections drop because another device uses the phone's IPv4 address | Updated apps prefer authenticated IPv6 link-local connections when available on the same Wi-Fi. The router's duplicate IPv4 assignment can still affect other apps. |
-| Wireless authorization expired | Pair wireless control again. |
+| "Your phone forgot this Mac" | Choose **Re-pair wireless control** and scan the QR from **Pair device with QR code**. |
 | ADB cannot reach the phone | Check Mac Local Network access for DevSwitch and the app that started ADB. Connection errors are reported separately from discovery failures. |
 | Tool missing or cannot launch | Run the doctor; update or configure the reported executable. |
 | Settings permission missing | Repeat the USB grant. Some manufacturers restrict this permission. |

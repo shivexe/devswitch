@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Incoming call alert and decline (planned v2)",
+    "output": ".archify/sequence-continuity-call-20261107-213107/call-sequence.html",
+    "viewBox": [
+      1000,
+      640
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:shivexe/devswitch.git",
+      "link_mode": "local-only",
+      "revision": "4f9ae3b6b72b2cb9c9b34bac71ea7badbfe201c6"
+    }
+  },
+  "participants": [
+    {
+      "id": "android",
+      "type": "external",
+      "label": "Android OS",
+      "sublabel": "SMS · calls"
+    },
+    {
+      "id": "phone",
+      "type": "backend",
+      "label": "Phone app",
+      "sublabel": "Outbox + loop",
+      "sources": [
+        {
+          "path": "app/src/main/java/com/himphen/playground/developeroptionstoggle/remote/RemoteService.kt",
+          "line": 79,
+          "end_line": 138,
+          "label": "poll loop (v1 today)"
+        }
+      ]
+    },
+    {
+      "id": "ctrl",
+      "type": "backend",
+      "label": "Mac Controller",
+      "sublabel": "/v2/poll",
+      "sources": [
+        {
+          "path": "mac/Controller.swift",
+          "line": 125,
+          "end_line": 157,
+          "label": "handle() (v1 today)"
+        }
+      ]
+    },
+    {
+      "id": "panel",
+      "type": "frontend",
+      "label": "Call panel",
+      "sublabel": "NSPanel"
+    },
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "at the Mac"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 290,
+      "label": "Ring"
+    },
+    {
+      "from": 298,
+      "to": 492,
+      "label": "Decline"
+    }
+  ],
+  "messages": [
+    {
+      "id": "ring",
+      "from": "android",
+      "to": "phone",
+      "y": 175,
+      "label": "PHONE_STATE ringing + number"
+    },
+    {
+      "id": "call-poll",
+      "from": "phone",
+      "to": "ctrl",
+      "y": 205,
+      "label": "kick() → poll events[call]",
+      "variant": "emphasis"
+    },
+    {
+      "id": "show-panel",
+      "from": "ctrl",
+      "to": "panel",
+      "y": 235,
+      "label": "show caller"
+    },
+    {
+      "id": "hot",
+      "from": "ctrl",
+      "to": "phone",
+      "y": 265,
+      "label": "nextPollMs 500",
+      "variant": "return"
+    },
+    {
+      "id": "decline",
+      "from": "user",
+      "to": "panel",
+      "y": 295,
+      "label": "Decline"
+    },
+    {
+      "id": "enqueue",
+      "from": "panel",
+      "to": "ctrl",
+      "y": 325,
+      "label": "queue declineCall, TTL 15 s"
+    },
+    {
+      "id": "hot-poll",
+      "from": "phone",
+      "to": "ctrl",
+      "y": 355,
+      "label": "hot poll ≤500 ms"
+    },
+    {
+      "id": "cmd",
+      "from": "ctrl",
+      "to": "phone",
+      "y": 385,
+      "label": "commands[declineCall]",
+      "variant": "return"
+    },
+    {
+      "id": "endcall",
+      "from": "phone",
+      "to": "android",
+      "y": 415,
+      "label": "TelecomManager.endCall()"
+    },
+    {
+      "id": "receipt",
+      "from": "phone",
+      "to": "ctrl",
+      "y": 445,
+      "label": "receipt ok + call idle"
+    },
+    {
+      "id": "hide-panel",
+      "from": "ctrl",
+      "to": "panel",
+      "y": 475,
+      "label": "dismiss panel",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Call state",
+      "items": [
+        "idle → ringing → offhook / idle; missed if never offhook",
+        "Silence = mute STREAM_RING, restore on idle (best effort)",
+        "Poll stays at 500 ms for 30 s after the last hot trigger"
+      ]
+    }
+  ]
+}

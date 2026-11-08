@@ -1,0 +1,14 @@
+<!doctype html><title>react</title>
+<div id="root"></div>
+<script src="/node_modules/react/umd/react.development.js"></script>
+<script src="/node_modules/react-dom/umd/react-dom.development.js"></script>
+<script>
+  const h = React.createElement;
+  function Form() {
+    const [code, setCode] = React.useState('');
+    return h('form', null,
+      h('label', null, 'One-time code ', h('input', { id: 'otp', name: 'otp', value: code, onChange: e => setCode(e.target.value) })),
+      h('output', { id: 'state' }, code));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(Form));
+</script>

@@ -15,18 +15,25 @@ struct Invitation: Codable {
 }
 struct Hello: Codable { let deviceId: String; let deviceName: String; let clientNonce: String }
 struct Accepted: Codable { let deviceId: String; let key: String; let desktopName: String }
-struct PhoneStatus: Codable, Equatable {
-    let developer: Bool; let usb: Bool; let wifi: Bool; let permission: Bool; let wifiEndpoint: String?
-    let lanIPv4: String?; let wifiIPv6Endpoint: String?
-}
-struct Receipt: Codable { let id: String; let ok: Bool; let message: String }
 struct Poll: Codable { let requestId: String; let sentAt: Int64; let status: PhoneStatus; let receipt: Receipt? }
 struct Command: Codable { let id: String; let action: String; let expiresAt: Int64 }
 struct Reply: Codable { let requestId: String; let command: Command?; let desktopIPv6: String? }
+/// Outcome of one command as reported by the phone; enable/disable also require the reported settings to match.
+struct CommandReceipt: Equatable { let id: String; let action: String; let ok: Bool; let message: String }
+extension CommandReceipt {
+    /// The user-facing name of a command, for status messages.
+    static func label(_ action: String) -> String {
+        ["ring": "Find My Phone", "stopRing": "Stop ringing", "setClipboard": "Send Clipboard", "fileOffer": "Send File",
+         "fileAccept": "Receive file", "fileDecline": "Decline file", "sendSms": "Message", "dismiss": "Dismiss notification",
+         "reply": "Reply", "declineCall": "Decline call", "silenceCall": "Silence call", "setMuted": "Mute app"][action] ?? action
+    }
+    var failure: String { "\(Self.label(action)) failed: \(message.isEmpty ? "your phone could not do it." : message)" }
+}
 
 @MainActor
 final class Controller: ObservableObject {
     static let port: UInt16 = 45874
+    static let sendingClipboard = "Sending your clipboard to the phone…"
     let screen = ScreenControl()
     @Published var phone: Phone?
     @Published var status: PhoneStatus?
@@ -35,15 +42,32 @@ final class Controller: ObservableObject {
     @Published var invitation: Invitation?
     @Published var comparison = ""
     @Published var candidateName = ""
-    @Published var pending: Command?
+    @Published private(set) var queue: [OutgoingCommand] = []
+    @Published private(set) var lastReceipt: CommandReceipt?
     @Published var serverReady = false
+    /// The enable/disable change in flight, kept for views and the v1 poll.
+    var pending: Command? {
+        queue.first { ["enable", "disable"].contains($0.a) }.map { Command(id: $0.id, action: $0.a, expiresAt: $0.expiresAt) }
+    }
+    var onReceipt: ((String, Receipt) -> Void)?
+    /// Icon hashes the Mac wants the phone to attach; sent once in the next v2 reply.
+    var needIcons: Set<String> = []
     private var hello: Hello?
     private var approved: Envelope?
-    private var seen: [String: Date] = [:]
+    private var seen: [String: (at: Date, sentAt: Int64)] = [:]
+    /// Newest sentAt among ids evicted from a full `seen`; a replay of an evicted id can be no newer.
+    private var evictedSentAt = Int64.min
+    private var recentEvents: [String] = []
+    private var delivered: Set<String> = []
+    private var hotUntil = Date.distantPast
+    private var lastPoll = Date.distantPast
+    private var askedMs = 0
     private var attempts: [Date] = []
     private var lastSeen = Date.distantPast
     private var timer: Timer?
     private lazy var server = HTTPServer { [weak self] in self?.handle($0) ?? HTTPResponse(503) }
+    private lazy var router = EventRouter(controller: self)
+    lazy var files = FileChannel(controller: self)
     private let keychainService = "dev.notsg.devswitch.pairing"
 
     init() {
@@ -68,11 +92,10 @@ final class Controller: ObservableObject {
     }
     private func save(_ phone: Phone) throws {
         let data = try JSONEncoder().encode(phone)
-        let result = SecItemUpdate(keychainQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let attributes: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let result = SecItemUpdate(keychainQuery as CFDictionary, attributes as CFDictionary)
         if result == errSecItemNotFound {
-            var query = keychainQuery
-            query[kSecValueData as String] = data
-            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let query = keychainQuery.merging(attributes) { $1 }
             guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw AppError.message("Could not save pairing in Keychain.") }
         } else if result != errSecSuccess { throw AppError.message("Could not update pairing in Keychain.") }
     }
@@ -80,7 +103,7 @@ final class Controller: ObservableObject {
         let code = SecItemDelete(keychainQuery as CFDictionary)
         guard code == errSecSuccess || code == errSecItemNotFound else { message = "Could not remove pairing from Keychain."; return }
         screen.forget()
-        phone = nil; status = nil; online = false; pending = nil; lastSeen = .distantPast
+        phone = nil; status = nil; online = false; queue = []; delivered = []; lastSeen = .distantPast
         cancelPairing(); message = "Phone unpaired."
     }
     func makeInvitation(address: String) {
@@ -107,16 +130,39 @@ final class Controller: ObservableObject {
     }
     func send(_ action: String) {
         guard ["enable", "disable"].contains(action), online, pending == nil, status?.permission == true else { return }
+        // Stopping a session that turned development on already queues the disable.
         if action == "disable" { screen.stop() }
-        pending = Command(id: UUID().uuidString.lowercased(), action: action, expiresAt: Int64(Date().timeIntervalSince1970) + 20)
+        if pending == nil { enqueue(OutgoingCommand(action, ttl: 20)) }
         message = action == "enable" ? "Enabling on your phone…" : "Disabling on your phone…"
+    }
+    /// Queues a command for the phone, even while it is offline; its TTL handles staleness.
+    func enqueue(_ command: OutgoingCommand) {
+        if queue.count >= 16, let index = queue.firstIndex(where: { !$0.isCall }) ?? queue.indices.first {
+            delivered.remove(queue.remove(at: index).id)
+        }
+        queue.append(command)
+    }
+    /// Asks the phone to poll every 500 ms for a while (menu panel open, transfer, call).
+    func requestHotPolling(for seconds: TimeInterval) {
+        hotUntil = max(hotUntil, Date().addingTimeInterval(seconds))
+    }
+    private func expireCommands() {
+        let now = Int64(Date().timeIntervalSince1970)
+        if let pending, pending.expiresAt < now { message = "No confirmation received. Check the phone connection and retry." }
+        for command in queue where command.expiresAt < now {
+            delivered.remove(command.id)
+            // Background syncs (mute list, dismissals, automatic clipboard) expire quietly.
+            if !["enable", "disable", "setMuted", "dismiss"].contains(command.a), command.a != "setClipboard" || message == Self.sendingClipboard {
+                message = "\(CommandReceipt.label(command.a)): no answer from your phone. Check the connection and retry."
+            }
+        }
+        if queue.contains(where: { $0.expiresAt < now }) { queue.removeAll { $0.expiresAt < now } }
     }
     private func tick() {
         let connected = phone != nil && Date().timeIntervalSince(lastSeen) < 10
         if online != connected { online = connected }
-        if let pending, pending.expiresAt < Int64(Date().timeIntervalSince1970) {
-            self.pending = nil; message = "No confirmation received. Check the phone connection and retry."
-        }
+        expireCommands()
+        files.sweep()
         if let invitation, invitation.expiresAt < Int64(Date().timeIntervalSince1970) {
             cancelPairing()
             if phone == nil { message = "Pairing code expired. Generate a new code." }
@@ -125,35 +171,100 @@ final class Controller: ObservableObject {
     private func handle(_ request: HTTPRequest) -> HTTPResponse {
         do {
             if request.path.hasPrefix("/v1/pair/") { return try pair(request) }
+            if request.path == "/v2/poll" { return try handleV2(request) }
+            if request.path.hasPrefix("/v2/file/") { return files.handle(request) }
             guard request.path == "/v1/poll", let phone else { return HTTPResponse(403) }
             let envelope = try JSONDecoder().decode(Envelope.self, from: request.body)
             guard envelope.deviceId == phone.id else { return HTTPResponse(403) }
             let poll = try SyncCrypto.open(Poll.self, envelope: envelope, key: phone.key, aad: "devswitch/poll/v1/\(phone.id)")
             guard abs(Double(poll.sentAt) - Date().timeIntervalSince1970) <= 30,
                   let nonce = Data(base64Encoded: poll.requestId), nonce.count == 32 else { return HTTPResponse(400) }
-            seen = seen.filter { Date().timeIntervalSince($0.value) < 120 }
-            guard seen[poll.requestId] == nil, seen.count < 500 else { return HTTPResponse(409) }
-            seen[poll.requestId] = Date()
-            if status != poll.status { status = poll.status }
-            lastSeen = Date()
-            // Non-secret diagnostics for local connection troubleshooting.
-            UserDefaults.standard.set(poll.status.wifiEndpoint ?? "", forKey: "connection.phoneEndpoint")
-            UserDefaults.standard.set(lastSeen.timeIntervalSince1970, forKey: "connection.lastSeen")
-            UserDefaults.standard.set(request.remoteHost?.contains(":") == true ? "IPv6" : "IPv4", forKey: "connection.transport")
-            UserDefaults.standard.set(LocalNetwork.link(for: poll.status.lanIPv4)?.host ?? "", forKey: "connection.desktopIPv6")
-            UserDefaults.standard.set(LocalNetwork.phoneEndpoint(poll.status) ?? "", forKey: "connection.phoneIPv6Endpoint")
-            if !online { online = true }
-            if let receipt = poll.receipt, let command = pending, receipt.id == command.id {
-                let matches = command.action == "enable"
-                    ? poll.status.developer && poll.status.usb && poll.status.wifi
-                    : !poll.status.developer && !poll.status.usb && !poll.status.wifi
-                message = receipt.ok && matches ? "Confirmed by your phone." : "Phone could not apply the change. \(receipt.message.prefix(160))"
-                pending = nil
-            }
-            if let pending, pending.expiresAt < Int64(Date().timeIntervalSince1970) { self.pending = nil }
+            guard remember(poll.requestId, sentAt: poll.sentAt) else { return HTTPResponse(409) }
+            record(poll.status, request)
+            if let receipt = poll.receipt, receipt.id == pending?.id { complete(receipt) }
+            expireCommands()
             return try .json(200, SyncCrypto.seal(Reply(requestId: poll.requestId, command: pending,
                 desktopIPv6: LocalNetwork.link(for: poll.status.lanIPv4)?.host), key: phone.key, aad: "devswitch/reply/v1/\(phone.id)"))
         } catch { return HTTPResponse(400) }
+    }
+    private func handleV2(_ request: HTTPRequest) throws -> HTTPResponse {
+        guard let phone else { return HTTPResponse(403) }
+        let envelope = try JSONDecoder().decode(Envelope.self, from: request.body)
+        guard envelope.deviceId == phone.id else { return HTTPResponse(403) }
+        let poll = try SyncCrypto.open(Poll2.self, envelope: envelope, key: phone.key, aad: "devswitch/poll/v2/\(phone.id)")
+        guard abs(Double(poll.sentAt) - Date().timeIntervalSince1970) <= 30,
+              let nonce = Data(base64Encoded: poll.requestId), nonce.count == 32,
+              (poll.events?.count ?? 0) <= 32, (poll.receipts?.count ?? 0) <= 16 else { return HTTPResponse(400) }
+        // Only empty polls that come back sooner than asked are throttled; events and receipts always get through.
+        let elapsed = Date().timeIntervalSince(lastPoll)
+        if poll.events?.isEmpty != false, poll.receipts?.isEmpty != false, elapsed * 1000 < Double(askedMs), elapsed < 0.15 {
+            return HTTPResponse(429, Data("{\"nextPollMs\":150}".utf8))
+        }
+        guard remember(poll.requestId, sentAt: poll.sentAt) else { return HTTPResponse(409) }
+        record(poll.status, request)
+        let events = poll.events ?? []
+        for event in events where !recentEvents.contains(event.id) {
+            recentEvents.append(event.id)
+            if recentEvents.count > 512 { recentEvents.removeFirst() }
+            if event.kind == .call, event.string("state") == "ringing" { requestHotPolling(for: 30) }
+            router.handle(event)
+        }
+        for receipt in poll.receipts ?? [] where queue.contains(where: { $0.id == receipt.id }) { complete(receipt) }
+        expireCommands()
+        let commands = Array(queue.prefix(16))
+        // A command delivered for the first time asks for an immediate poll so its receipt comes straight back.
+        let fresh = commands.contains { !delivered.contains($0.id) }
+        delivered.formUnion(commands.map(\.id))
+        askedMs = fresh ? 0 : !queue.isEmpty || hotUntil > Date() || status?.ringing == true ? 500 : 2000
+        lastPoll = Date()
+        let icons = Array(needIcons.prefix(32)); needIcons.subtract(icons)
+        return try .json(200, SyncCrypto.seal(Reply2(requestId: poll.requestId, desktopIPv6: LocalNetwork.link(for: status?.lanIPv4)?.host,
+            ack: events.map(\.id), nextPollMs: askedMs, needIcons: icons, commands: commands, needStatus: status == nil ? true : nil),
+            key: phone.key, aad: "devswitch/reply/v2/\(phone.id)"))
+    }
+    private func remember(_ requestId: String, sentAt: Int64) -> Bool {
+        seen = seen.filter { Date().timeIntervalSince($0.value.at) < 120 }
+        guard seen[requestId] == nil, sentAt > evictedSentAt else { return false }
+        // 2048 covers 120 s of 500 ms hot polling plus immediate event polls. A flood evicts the oldest id instead of
+        // refusing every poll; evictedSentAt then refuses anything sent no later than it, so evicted ids stay unreplayable.
+        if seen.count >= 2048, let oldest = seen.min(by: { $0.value.at < $1.value.at }) {
+            seen[oldest.key] = nil
+            evictedSentAt = max(evictedSentAt, oldest.value.sentAt)
+        }
+        seen[requestId] = (Date(), sentAt)
+        return true
+    }
+    private func record(_ newStatus: PhoneStatus?, _ request: HTTPRequest) {
+        if let newStatus, status != newStatus { status = newStatus }
+        lastSeen = Date()
+        // Non-secret diagnostics for local connection troubleshooting.
+        UserDefaults.standard.set(status?.wifiEndpoint ?? "", forKey: "connection.phoneEndpoint")
+        UserDefaults.standard.set(lastSeen.timeIntervalSince1970, forKey: "connection.lastSeen")
+        UserDefaults.standard.set(request.remoteHost?.contains(":") == true ? "IPv6" : "IPv4", forKey: "connection.transport")
+        UserDefaults.standard.set(LocalNetwork.link(for: status?.lanIPv4)?.host ?? "", forKey: "connection.desktopIPv6")
+        UserDefaults.standard.set(LocalNetwork.phoneEndpoint(status) ?? "", forKey: "connection.phoneIPv6Endpoint")
+        if !online { online = true }
+    }
+    private func complete(_ receipt: Receipt) {
+        guard let index = queue.firstIndex(where: { $0.id == receipt.id }) else { return }
+        let command = queue.remove(at: index)
+        delivered.remove(command.id)
+        var ok = receipt.ok
+        if ["enable", "disable"].contains(command.a), let status {
+            let matches = command.a == "enable"
+                ? status.developer && status.usb && status.wifi
+                : !status.developer && !status.usb && !status.wifi
+            ok = ok && matches
+            message = ok ? "Confirmed by your phone." : "Phone could not apply the change. \(receipt.message.prefix(160))"
+        }
+        let result = CommandReceipt(id: command.id, action: command.a, ok: ok, message: String(receipt.message.prefix(160)))
+        if !ok, !["enable", "disable"].contains(command.a) { message = result.failure }
+        // A refused offer must free the channel, or the next send waits out the 10-minute expiry.
+        if !ok, command.a == "fileOffer", case .string(let id)? = command.fields["transferId"] { files.cancelOutgoing(id) }
+        // Only the manual send says so; automatic sync stays quiet.
+        if ok, command.a == "setClipboard", message == Self.sendingClipboard { message = "Sent your clipboard to the phone. Paste it there." }
+        lastReceipt = result
+        onReceipt?(command.id, receipt)
     }
     private func pair(_ request: HTTPRequest) throws -> HTTPResponse {
         attempts.removeAll { Date().timeIntervalSince($0) > 60 }

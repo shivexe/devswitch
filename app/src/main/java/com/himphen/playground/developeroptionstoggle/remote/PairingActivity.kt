@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -22,8 +23,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -36,8 +38,8 @@ import com.journeyapps.barcodescanner.BarcodeResult
 import com.journeyapps.barcodescanner.BarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import com.himphen.playground.developeroptionstoggle.ui.theme.DeveloperOptionsToggleTheme
-import com.himphen.playground.developeroptionstoggle.ui.screen.DeviceMark
-import com.himphen.playground.developeroptionstoggle.ui.screen.SectionLabel
+import com.himphen.playground.developeroptionstoggle.R
+import com.himphen.playground.developeroptionstoggle.ui.screen.*
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.util.UUID
@@ -48,6 +50,7 @@ class PairingActivity : ComponentActivity() {
     private var waiting by mutableStateOf(false)
     private var comparisonCode by mutableStateOf("")
     private var errorText by mutableStateOf("")
+    private var mutedAppsOpen by mutableStateOf(false)
     private var pairingThread: Thread? = null
     @Volatile private var cancelled = false
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -59,7 +62,7 @@ class PairingActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         pairedName = try { PairStore.load(this)?.getString("desktopName") } catch (_: Exception) { null }
-        setContent { DeveloperOptionsToggleTheme { ConnectionScreen() } }
+        setContent { DeveloperOptionsToggleTheme { if (mutedAppsOpen) MutedAppsScreen { mutedAppsOpen = false } else ConnectionScreen() } }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -78,101 +81,119 @@ class PairingActivity : ComponentActivity() {
         var unpairOpen by remember { mutableStateOf(false) }
         var paused by remember { mutableStateOf(getSharedPreferences("devswitch", MODE_PRIVATE).getBoolean("paused", false)) }
         LaunchedEffect(Unit) { while (true) { connection = RemoteService.connectionState; delay(1000) } }
-        Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
-            TopAppBar(title = { Text("Mac connection", fontWeight = FontWeight.SemiBold) },
-                navigationIcon = { TextButton(onClick = { finish() }) { Text("Back") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
+        Scaffold(containerColor = MaterialTheme.colorScheme.surface, topBar = {
+            TopAppBar(title = { Text("Mac connection") },
+                navigationIcon = { IconButton(onClick = { finish() }) { Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "Back") } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface))
         }) { inset ->
-            Column(Modifier.fillMaxSize().padding(inset).verticalScroll(rememberScrollState()).padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Column(Modifier.fillMaxSize().padding(inset).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)) {
                 when {
                     pairedName != null -> {
-                        Box(Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
-                            DeviceMark(laptop = true, modifier = Modifier.size(32.dp))
+                        val connected = isConnected(connection)
+                        Column(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            IconBadge(R.drawable.ic_laptop, size = 72.dp,
+                                container = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                                content = if (connected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer)
+                            Text(pairedName.orEmpty(), Modifier.padding(top = 8.dp), style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                StatusDot(connected)
+                                Text(connection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(pairedName.orEmpty(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-                            Text(connection, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                SectionLabel("MAC CONTROL")
-                                Text(if (paused) "Connection paused" else "Ready when you are", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                                Text(if (paused) "Resume to receive commands from your Mac." else "Use the Mac menu bar to control your phone or switch development on and off.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(if (paused) "Mac control is paused" else "Mac control is on", style = MaterialTheme.typography.titleMedium)
+                                Text(if (paused) "Resume to receive commands from your Mac." else "Use the Mac menu bar to control your phone or switch development on and off.",
+                                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (paused) {
                                     Button(onClick = {
                                         getSharedPreferences("devswitch", MODE_PRIVATE).edit().putBoolean("paused", false).apply()
                                         paused = false
                                         RemoteService.start(this@PairingActivity)
-                                    }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("Resume Mac control") }
+                                    }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Resume Mac control") }
                                 } else {
                                     OutlinedButton(onClick = {
                                         getSharedPreferences("devswitch", MODE_PRIVATE).edit().putBoolean("paused", true).apply()
                                         paused = true
                                         stopService(Intent(this@PairingActivity, RemoteService::class.java))
-                                    }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) { Text("Pause Mac control") }
+                                    }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Pause Mac control") }
                                 }
                             }
                         }
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            SectionLabel("KEEP IT CONNECTED")
-                            Text("Keep both devices on the same Wi-Fi. Allow background activity if your phone stops responding while locked.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            OutlinedButton(onClick = { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) },
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp)) { Text("Open app battery settings") }
+                        Column {
+                            SectionHeader("Stay connected")
+                            GroupCard {
+                                NavRow(R.drawable.ic_laptop, "Notifications on your Mac", "Choose which apps show up") { mutedAppsOpen = true }
+                                HorizontalDivider(Modifier.padding(start = 56.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                                NavRow(R.drawable.ic_battery, "Battery settings", "Allow background activity if the phone stops responding while locked",
+                                    trailing = R.drawable.ic_open_in_new) {
+                                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+                                }
+                            }
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        TextButton(onClick = { unpairOpen = true }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Unpair this Mac") }
+                        OutlinedButton(onClick = { unpairOpen = true }, modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) { Text("Unpair this Mac") }
                     }
                     waiting -> {
-                        Text("Compare the codes", style = MaterialTheme.typography.headlineMedium)
-                        Text("Check that the same six digits appear on your Mac. Then choose Codes match — pair there.", style = MaterialTheme.typography.bodyLarge)
-                        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                            Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(comparisonCode.ifEmpty { "••••••" }, fontFamily = FontFamily.Monospace, fontSize = 42.sp, letterSpacing = 4.sp, color = MaterialTheme.colorScheme.primary)
+                        Text("Compare the codes", style = MaterialTheme.typography.headlineSmall)
+                        Text("Check that your Mac shows the same six digits, then choose Codes Match — Pair there.",
+                            style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                            Column(Modifier.padding(vertical = 32.dp, horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                                val code = comparisonCode.ifEmpty { "••••••" }
+                                Text("${code.take(3)} ${code.drop(3)}", fontFamily = FontFamily.Monospace, fontSize = 44.sp, letterSpacing = 2.sp,
+                                    color = MaterialTheme.colorScheme.primary)
+                                LinearProgressIndicator(Modifier.fillMaxWidth(0.6f))
+                                Text("Waiting for approval on your Mac", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Text("Waiting for approval on your Mac")
-                        }
-                        OutlinedButton(onClick = { cancelled = true; pairingThread?.interrupt(); waiting = false; comparisonCode = "" }) { Text("Cancel pairing") }
+                        OutlinedButton(onClick = { cancelled = true; pairingThread?.interrupt(); waiting = false; comparisonCode = "" },
+                            modifier = Modifier.fillMaxWidth()) { Text("Cancel pairing") }
                     }
                     else -> {
-                        Text(if (scanning) "Scan your Mac’s code" else "Pair with your Mac", style = MaterialTheme.typography.headlineMedium)
-                        Text("On your Mac, open DevSwitch from the menu bar and choose Pair phone.", style = MaterialTheme.typography.bodyLarge)
+                        Text(if (scanning) "Scan your Mac's code" else "Pair with your Mac", style = MaterialTheme.typography.headlineSmall)
+                        Text("On your Mac, click DevSwitch in the menu bar and choose Pair Phone.",
+                            style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (scanning) {
                             Scanner()
-                            Text("Fit the entire QR inside the frame. Hold the phone upright, about 20–40 cm from the screen.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = { scanning = false }) { Text("Close camera") }
+                            Text("Fit the whole code inside the frame. Hold the phone upright, about 20–40 cm from the screen.",
+                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedButton(onClick = { scanning = false }, modifier = Modifier.fillMaxWidth()) { Text("Close camera") }
                         } else {
-                            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
                                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    SectionLabel("THREE QUICK STEPS")
-                                    Text("01   Scan the QR code on your Mac")
-                                    Text("02   Compare the six-digit codes")
-                                    Text("03   Approve the connection on your Mac")
+                                    NumberedStep(1, "Scan the QR code on your Mac")
+                                    NumberedStep(2, "Compare the six-digit codes")
+                                    NumberedStep(3, "Approve the connection on your Mac")
                                 }
                             }
-                            Button(onClick = ::scan, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), shape = RoundedCornerShape(14.dp)) { Text("Scan Mac QR code") }
+                            Button(onClick = ::scan, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                                Icon(painterResource(R.drawable.ic_qr_code), contentDescription = null, Modifier.size(20.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text("Scan Mac QR code")
+                            }
                         }
-                        TextButton(onClick = { scanning = false; pasteOpen = true }) { Text("Paste invitation instead") }
-                        Text("Both devices need the same Wi-Fi network.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { scanning = false; pasteOpen = true }, modifier = Modifier.fillMaxWidth()) { Text("Paste invitation instead") }
+                        Text("Both devices need to be on the same Wi-Fi network.", Modifier.align(Alignment.CenterHorizontally),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                if (errorText.isNotEmpty()) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                    Text(errorText, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer)
-                }
+                if (errorText.isNotEmpty()) ProblemCard("Couldn't pair", errorText)
             }
         }
         if (pasteOpen) AlertDialog(onDismissRequest = { pasteOpen = false }, title = { Text("Paste invitation") },
-            text = { OutlinedTextField(value = invitationText, onValueChange = { invitationText = it }, label = { Text("From Copy invitation on your Mac") }, minLines = 3, maxLines = 6) },
+            text = { OutlinedTextField(value = invitationText, onValueChange = { invitationText = it }, label = { Text("From Copy Invitation on your Mac") }, minLines = 3, maxLines = 6) },
             confirmButton = { TextButton(onClick = { pasteOpen = false; pair(invitationText); invitationText = "" }, enabled = invitationText.isNotBlank()) { Text("Connect") } },
             dismissButton = { TextButton(onClick = { pasteOpen = false; invitationText = "" }) { Text("Cancel") } })
         if (unpairOpen) AlertDialog(onDismissRequest = { unpairOpen = false }, title = { Text("Unpair this Mac?") }, text = { Text("It will no longer control developer settings.") },
             confirmButton = { TextButton(onClick = {
                 stopService(Intent(this@PairingActivity, RemoteService::class.java)); PairStore.clear(this@PairingActivity)
                 RemoteService.connectionState = "Not paired"; pairedName = null; unpairOpen = false
-            }) { Text("Unpair") } }, dismissButton = { TextButton(onClick = { unpairOpen = false }) { Text("Cancel") } })
+            }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Unpair") } },
+            dismissButton = { TextButton(onClick = { unpairOpen = false }) { Text("Cancel") } })
     }
     @Composable
     private fun Scanner() {
@@ -195,7 +216,7 @@ class PairingActivity : ComponentActivity() {
             onDispose { owner.lifecycle.removeObserver(observer); barcode.pause() }
         }
         AndroidView(factory = { barcode }, modifier = Modifier.fillMaxWidth().aspectRatio(1f)
-            .clip(RoundedCornerShape(20.dp)).background(Color.Black).border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(20.dp)))
+            .clip(RoundedCornerShape(24.dp)).background(Color.Black).border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(24.dp)))
     }
     private fun pair(raw: String) {
         if (pairingThread?.isAlive == true) return

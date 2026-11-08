@@ -1,0 +1,53 @@
+{
+  "comment": "Generated once by the JVM (javax.crypto AES/GCM/NoPadding, same calls as Protocol.kt). Plaintext is fixed UTF-8 bytes; compare ciphertext, never re-encoded JSON. Do not regenerate silently.",
+  "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "deviceId": "0f8c2c1e-4b7a-4d55-9a3e-6c1d2b3a4f50",
+  "nonceHex": "404142434445464748494a4b",
+  "aad": "devswitch/file/v1/0f8c2c1e-4b7a-4d55-9a3e-6c1d2b3a4f50/5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b/0/1/1",
+  "plaintextUtf8": "DevSwitch chunk 0/1 ✓ — फ़ाइल\n !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ !\"#$%&'()",
+  "ciphertextB64": "ptzYcFFV82Cl5HRe7gp4e0npY3xVqZwDlcfaxXe3Rjs8tBMIYFl708FQuWWxLP3571SMFhvuyCKtN/orF9sa89Am45085xGRa/xdutY5visKPRSMYyNexDuba3BLUXYG46YsvdBZPZsUT8vk16qQb+zaO4nD9hgWu9PbixjZMLDDdhiyfkgD/I8GpoidfUjqle6UuGvZ15sCearNqZdJecj+zyJHiT0/FAuVlNdgsZaPUcdsjUoNz9STebKRrvVAHaBvxzV9nvNIhk9XIVoONVDFKyN+RClUWJ2ps/Xgv2t7otVRmwRkhlXch8eauM1zOc9GDQ==",
+  "tagB64": "ZrGAXY78PKiNzvsV9K829Q==",
+  "expect": {
+    "plaintextLength": 244
+  },
+  "transferId": "5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b",
+  "framedB64": "QEFCQ0RFRkdISUpLptzYcFFV82Cl5HRe7gp4e0npY3xVqZwDlcfaxXe3Rjs8tBMIYFl708FQuWWxLP3571SMFhvuyCKtN/orF9sa89Am45085xGRa/xdutY5visKPRSMYyNexDuba3BLUXYG46YsvdBZPZsUT8vk16qQb+zaO4nD9hgWu9PbixjZMLDDdhiyfkgD/I8GpoidfUjqle6UuGvZ15sCearNqZdJecj+zyJHiT0/FAuVlNdgsZaPUcdsjUoNz9STebKRrvVAHaBvxzV9nvNIhk9XIVoONVDFKyN+RClUWJ2ps/Xgv2t7otVRmwRkhlXch8eauM1zOc9GDWaxgF2O/Dyojc77FfSvNvU=",
+  "negative": [
+    {
+      "name": "wrongIndexInAad",
+      "aad": "devswitch/file/v1/0f8c2c1e-4b7a-4d55-9a3e-6c1d2b3a4f50/5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b/1/1/1",
+      "expect": "authFail"
+    },
+    {
+      "name": "wrongTotalInAad",
+      "aad": "devswitch/file/v1/0f8c2c1e-4b7a-4d55-9a3e-6c1d2b3a4f50/5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b/0/2/1",
+      "expect": "authFail"
+    },
+    {
+      "name": "notFinalInAad",
+      "aad": "devswitch/file/v1/0f8c2c1e-4b7a-4d55-9a3e-6c1d2b3a4f50/5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b/0/1/0",
+      "expect": "authFail"
+    },
+    {
+      "name": "wrongDeviceIdInAad",
+      "aad": "devswitch/file/v1/7d1e9b20-55c4-4e0f-8a6b-2f3c4d5e6f70/5b3f6a10-1c2d-4e3f-8a9b-0c1d2e3f4a5b/0/1/1",
+      "expect": "authFail"
+    },
+    {
+      "name": "tamperedCiphertext",
+      "ciphertextB64": "p9zYcFFV82Cl5HRe7gp4e0npY3xVqZwDlcfaxXe3Rjs8tBMIYFl708FQuWWxLP3571SMFhvuyCKtN/orF9sa89Am45085xGRa/xdutY5visKPRSMYyNexDuba3BLUXYG46YsvdBZPZsUT8vk16qQb+zaO4nD9hgWu9PbixjZMLDDdhiyfkgD/I8GpoidfUjqle6UuGvZ15sCearNqZdJecj+zyJHiT0/FAuVlNdgsZaPUcdsjUoNz9STebKRrvVAHaBvxzV9nvNIhk9XIVoONVDFKyN+RClUWJ2ps/Xgv2t7otVRmwRkhlXch8eauM1zOc9GDQ==",
+      "expect": "authFail"
+    },
+    {
+      "name": "tamperedTag",
+      "tagB64": "Z7GAXY78PKiNzvsV9K829Q==",
+      "expect": "authFail"
+    },
+    {
+      "name": "truncatedFrame",
+      "framedB64": "QEFCQ0RFRkdISUpLptzYcFFV82Cl5HRe7gp4",
+      "expect": "reject"
+    }
+  ],
+  "schemaCases": []
+}

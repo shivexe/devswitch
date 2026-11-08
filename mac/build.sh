@@ -9,10 +9,12 @@ app="$PWD/mac/build/DevSwitch.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 architectures="${DEVSWITCH_ARCHS:-$(uname -m)}"
 binaries=()
+swift_flags=""
+[[ "${DEVSWITCH_E2E:-}" == 1 ]] && swift_flags="-D E2E"
 for arch in $architectures; do
   [[ "$arch" == arm64 || "$arch" == x86_64 ]] || { echo "Unsupported architecture: $arch" >&2; exit 1; }
   binary="$PWD/mac/build/DevSwitch-$arch"
-  swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-macos14.0" mac/*.swift -o "$binary"
+  swiftc -O -parse-as-library -swift-version 5 -target "$arch-apple-macos14.0" $swift_flags mac/*.swift -o "$binary"
   binaries+=("$binary")
 done
 [[ ${#binaries[@]} -gt 0 ]] || { echo 'No architectures selected' >&2; exit 1; }
@@ -29,20 +31,27 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>DevSwitch</string>
 <key>CFBundleExecutable</key><string>DevSwitch</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleShortVersionString</key><string>0.0.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>Connect with your paired Android phone to control developer settings and share its screen.</string>
-<key>NSBonjourServices</key><array><string>_devswitch._tcp</string><string>_adb-tls-connect._tcp</string><string>_adb-tls-connect._tcp.</string></array>
+<key>NSBonjourServices</key><array><string>_devswitch._tcp</string><string>_adb-tls-connect._tcp</string><string>_adb-tls-connect._tcp.</string><string>_adb-tls-pairing._tcp</string><string>_adb-tls-pairing._tcp.</string></array>
 </dict></plist>
 PLIST
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
 cp LICENSE THIRD_PARTY_NOTICES.md "$app/Contents/Resources/"
+cp mac/AppIcon.icns "$app/Contents/Resources/"
 mkdir -p "$app/Contents/Resources/licenses"
 cp licenses/*.txt "$app/Contents/Resources/licenses/"
+rm -rf "$app/Contents/Resources/extension"
+cp -R extension "$app/Contents/Resources/extension"
 # Public builds are ad-hoc signed. Never select a certificate from the build machine automatically.
-codesign --force --sign "${DEVSWITCH_SIGN_IDENTITY:--}" --identifier dev.notsg.devswitch "$app"
+# A named identity also gets the hardened runtime and a timestamp, which notarization requires.
+identity="${DEVSWITCH_SIGN_IDENTITY:--}"
+if [[ "$identity" == - ]]; then codesign --force --sign - --identifier dev.notsg.devswitch "$app"
+else codesign --force --options runtime --timestamp --sign "$identity" --identifier dev.notsg.devswitch "$app"; fi
 codesign --verify --strict "$app"
 echo "Built $app ($version; $architectures)"

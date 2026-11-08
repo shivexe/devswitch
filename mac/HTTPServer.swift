@@ -11,6 +11,7 @@ struct HTTPRequest {
 struct HTTPResponse {
     let status: Int
     let body: Data
+    var contentType = "application/json"
     init(_ status: Int, _ body: Data = Data("{}".utf8)) {
         self.status = status
         self.body = body
@@ -24,6 +25,7 @@ struct HTTPResponse {
 final class HTTPServer {
     private var listener: NWListener?
     private var connections: [UUID: NWConnection] = [:]
+    private var buffers: [UUID: Data] = [:]
     private let handler: (HTTPRequest) -> HTTPResponse
     var ready: (() -> Void)?
     var failed: ((String) -> Void)?
@@ -53,6 +55,7 @@ final class HTTPServer {
         listener = nil
         connections.values.forEach { $0.cancel() }
         connections.removeAll()
+        buffers.removeAll()
     }
 
     private func accept(_ connection: NWConnection) {
@@ -64,28 +67,28 @@ final class HTTPServer {
             guard let self, self.connections[id] != nil else { return }
             self.finish(connection, id: id)
         }
-        receive(connection, id: id, bytes: Data())
+        receive(connection, id: id)
     }
 
-    private func receive(_ connection: NWConnection, id: UUID, bytes: Data) {
+    private func receive(_ connection: NWConnection, id: UUID) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, complete, error in
             Task { @MainActor in
                 guard let self, self.connections[id] != nil else { return }
-                var bytes = bytes
-                if let data { bytes.append(data) }
+                // Append in place; a captured copy would be duplicated on every receive.
+                if let data { self.buffers[id, default: Data()].append(data) }
                 do {
-                    if var request = try Self.parse(bytes) {
+                    if var request = try Self.parse(self.buffers[id] ?? Data()) {
                         if case let .hostPort(host, _) = connection.endpoint { request.remoteHost = "\(host)" }
                         self.respond(self.handler(request), connection: connection, id: id)
                     } else if complete || error != nil { self.finish(connection, id: id) }
-                    else { self.receive(connection, id: id, bytes: bytes) }
+                    else { self.receive(connection, id: id) }
                 } catch { self.respond(HTTPResponse(400), connection: connection, id: id) }
             }
         }
     }
 
     static func parse(_ data: Data) throws -> HTTPRequest? {
-        guard data.count <= 32 * 1024 + 16 * 1024 else { throw AppError.message("Request too large.") }
+        guard data.count <= 256 * 1024 + 28 + 16 * 1024 else { throw AppError.message("Request too large.") }
         guard let delimiter = data.range(of: Data("\r\n\r\n".utf8)) else {
             guard data.count <= 16 * 1024 else { throw AppError.message("Headers too large.") }
             return nil
@@ -102,10 +105,12 @@ final class HTTPServer {
             guard !name.isEmpty, headers[name] == nil else { throw AppError.message("Duplicate header.") }
             headers[name] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
+        // File chunks are raw sealed bytes; everything else, including the file status call, stays small JSON.
+        let binary = first[1].hasPrefix("/v2/file/") && !first[1].hasSuffix("/status")
         guard headers["transfer-encoding"] == nil, let lengthString = headers["content-length"],
-              !lengthString.isEmpty, lengthString.allSatisfy({ $0.isASCII && $0.isNumber }),
-              let length = Int(lengthString), length <= 32 * 1024,
-              headers["content-type"]?.lowercased().components(separatedBy: ";").first?.trimmingCharacters(in: .whitespaces) == "application/json" else { throw AppError.message("Invalid framing.") }
+              !lengthString.isEmpty, lengthString.count <= 7, lengthString.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let length = Int(lengthString), length <= (binary ? 256 * 1024 + 28 : 32 * 1024),
+              headers["content-type"]?.lowercased().components(separatedBy: ";").first?.trimmingCharacters(in: .whitespaces) == (binary ? "application/octet-stream" : "application/json") else { throw AppError.message("Invalid framing.") }
         let available = data.count - delimiter.upperBound
         guard available <= length else { throw AppError.message("Unexpected request data.") }
         guard available == length else { return nil }
@@ -113,9 +118,10 @@ final class HTTPServer {
     }
 
     private func respond(_ response: HTTPResponse, connection: NWConnection, id: UUID) {
-        let response = response.body.count <= 64 * 1024 ? response : HTTPResponse(500)
-        let reason = [200: "OK", 202: "Accepted", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 410: "Gone", 429: "Too Many Requests", 500: "Internal Server Error", 503: "Unavailable"][response.status] ?? "Error"
-        let header = "HTTP/1.1 \(response.status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+        let limit = response.contentType == "application/octet-stream" ? 300 * 1024 : 64 * 1024
+        let response = response.body.count <= limit ? response : HTTPResponse(500)
+        let reason = [200: "OK", 202: "Accepted", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 409: "Conflict", 410: "Gone", 429: "Too Many Requests", 500: "Internal Server Error", 503: "Unavailable"][response.status] ?? "Error"
+        let header = "HTTP/1.1 \(response.status) \(reason)\r\nContent-Type: \(response.contentType)\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
         connection.send(content: Data(header.utf8) + response.body, completion: .contentProcessed { [weak self] _ in
             Task { @MainActor in self?.finish(connection, id: id) }
         })
@@ -124,5 +130,6 @@ final class HTTPServer {
     private func finish(_ connection: NWConnection, id: UUID) {
         connection.cancel()
         connections.removeValue(forKey: id)
+        buffers.removeValue(forKey: id)
     }
 }

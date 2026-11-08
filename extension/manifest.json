@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "DevSwitch",
+  "version": "1.0.0",
+  "description": "Fill verification codes from your paired phone.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAphkBSDc6g6qA5UrtEgnttrqg23IAuaI+BBEoBV72qkJAQXMQRaxDDQto0opT+WvL7e08Z7E5IuiyxumzXh1tX8kt7av3apKcM+/ZicpWEkhLE/eJ3Vv1GjAHEuBIXfTaFUlE3MY8k8kJ3qlnfCqz2Zi1NEQRgZb5cs+BAYb54VGJWgaSEzBYMHe1WOtx67rGLBVOSlZsaYEKATZcuNjr9VTuVqrz21NsxlIIx9u6qhsUCLhTV1ZlwlZp8gJk0m36e3SULOilRTLqBGYBPg2Ok+wrUzJBP0MuTpprvhBDqWiE60RrYJMm4Wid0+dMqyBSQjoYXdGsU1R/BuUh/ULRLQIDAQAB",
+  "permissions": ["nativeMessaging"],
+  "background": { "service_worker": "service-worker.js" },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "all_frames": true,
+    "run_at": "document_idle"
+  }]
+}

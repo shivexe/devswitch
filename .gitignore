@@ -172,3 +172,9 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Test outputs
+extension-tests/node_modules/
+extension-tests/test-results/
+extension-tests/playwright-report/
+scripts/e2e/.state/
