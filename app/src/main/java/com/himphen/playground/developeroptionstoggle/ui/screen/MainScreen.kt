@@ -1,10 +1,17 @@
 package com.himphen.playground.developeroptionstoggle.ui.screen
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.provider.Settings
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import android.text.format.DateUtils
+import android.text.format.Formatter
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -14,44 +21,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.himphen.playground.developeroptionstoggle.R
+import com.himphen.playground.developeroptionstoggle.remote.PairStore
 import com.himphen.playground.developeroptionstoggle.remote.PairingActivity
+import com.himphen.playground.developeroptionstoggle.remote.Received
 import com.himphen.playground.developeroptionstoggle.remote.RemoteService
 import com.himphen.playground.developeroptionstoggle.ui.viewmodel.MainUiError
 import com.himphen.playground.developeroptionstoggle.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.delay
-
-@Composable
-fun DeviceMark(laptop: Boolean = false, modifier: Modifier = Modifier) {
-    val color = MaterialTheme.colorScheme.primary
-    Canvas(modifier.size(28.dp)) {
-        scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) {
-            if (laptop) {
-                drawRoundRect(color, Offset(3f, 4f), Size(18f, 13f), androidx.compose.ui.geometry.CornerRadius(2f), style = Stroke(1.6f))
-                drawLine(color, Offset(1f, 20f), Offset(23f, 20f), 1.6f)
-            } else {
-                drawRoundRect(color, Offset(5f, 1f), Size(14f, 22f), androidx.compose.ui.geometry.CornerRadius(3f), style = Stroke(1.6f))
-                drawLine(color, Offset(10f, 19f), Offset(14f, 19f), 1.6f)
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,9 +49,13 @@ fun MainScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     var connection by remember { mutableStateOf(RemoteService.connectionState) }
+    val loadMacName = { try { PairStore.load(context)?.getString("desktopName") } catch (_: Exception) { null } }
+    var macName by remember { mutableStateOf(loadMacName()) }
     LaunchedEffect(Unit) { while (true) { connection = RemoteService.connectionState; delay(1000) } }
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshStatus() }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) { viewModel.refreshStatus(); macName = loadMacName() }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
@@ -71,172 +64,172 @@ fun MainScreen(viewModel: MainViewModel) {
         catch (_: ActivityNotFoundException) { viewModel.showSystemSettingsError() }
         catch (_: SecurityException) { viewModel.showSystemSettingsError() }
     }
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { inset ->
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.surface,
+        topBar = {
+            LargeTopAppBar(title = { Text(stringResource(R.string.app_name)) }, scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer))
+        }
+    ) { inset ->
         if (uiState.isLoading) {
             Box(Modifier.fillMaxSize().padding(inset), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        } else {
-            Box(Modifier.fillMaxSize().padding(inset), contentAlignment = Alignment.TopCenter) {
-                Column(Modifier.widthIn(max = 600.dp).fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { DeviceMark() }
-                        Column {
-                            Text("DevSwitch", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                            Text("Your phone. Your control.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+            return@Scaffold
+        }
+        val isUpdating = uiState.updatingSetting != null
+        val canChange = uiState.hasPermission && !isUpdating
+        Box(Modifier.fillMaxSize().padding(inset), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.widthIn(max = 600.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                MacCard(macName, connection) { context.startActivity(Intent(context, PairingActivity::class.java)) }
+                DeveloperCard(uiState.developerOptionsEnabled, canChange, viewModel::setDeveloperOptions)
+                if (!uiState.hasPermission) PermissionCard()
+                uiState.error?.let { error ->
+                    if (error !is MainUiError.PermissionRequired) ErrorCard(error, if (error is MainUiError.SystemSettingsUnavailable) openDeveloperSettings else { { viewModel.refreshStatus() } })
+                }
+                if (macName != null) FromMacSection()
+                Column {
+                    SectionHeader("Debugging")
+                    GroupCard {
+                        val enabled = canChange && uiState.developerOptionsEnabled
+                        val hint = if (uiState.developerOptionsEnabled) null else "Turn on Development first"
+                        // Control Phone on the Mac needs this; call it out when it is the missing piece.
+                        val wirelessNeeded = uiState.developerOptionsEnabled && !uiState.wifiDebuggingEnabled
+                        SwitchRow(R.drawable.ic_wifi, "Wireless debugging",
+                            hint ?: if (wirelessNeeded) "Off. Your Mac needs this for Control Phone." else "On. Your Mac can use Control Phone.",
+                            uiState.wifiDebuggingEnabled, enabled, viewModel::setWifiDebugging, emphasize = wirelessNeeded)
+                        HorizontalDivider(Modifier.padding(start = 56.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                        SwitchRow(R.drawable.ic_usb, "USB debugging", hint ?: "Connect with a USB cable",
+                            uiState.usbDebuggingEnabled, enabled, viewModel::setUsbDebugging)
                     }
-                    val isUpdating = uiState.updatingSetting != null
-                    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("DEVELOPER OPTIONS", style = MaterialTheme.typography.labelMedium, letterSpacing = 1.5.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(if (uiState.developerOptionsEnabled) "Enabled" else "Disabled", Modifier.weight(1f), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                                Switch(checked = uiState.developerOptionsEnabled, onCheckedChange = viewModel::setDeveloperOptions,
-                                    enabled = uiState.hasPermission && !isUpdating,
-                                    modifier = Modifier.semantics { contentDescription = "Developer options" })
-                            }
-                            Text(if (uiState.developerOptionsEnabled) "Choose how your Mac connects below." else "Turn on to use debugging and screen control.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                        }
+                }
+                if (macName != null) SetupSection()
+                Column {
+                    SectionHeader("More")
+                    GroupCard {
+                        NavRow(R.drawable.ic_code, "Android developer options", "Every setting, in system Settings",
+                            trailing = R.drawable.ic_open_in_new, onClick = openDeveloperSettings)
                     }
-                    if (!uiState.hasPermission) PermissionWarning()
-                    uiState.error?.let { error ->
-                        if (error !is MainUiError.PermissionRequired) ErrorCard(error, if (error is MainUiError.SystemSettingsUnavailable) openDeveloperSettings else { { viewModel.refreshStatus() } })
+                }
+                Text("Works on your local network. No account needed.", Modifier.align(Alignment.CenterHorizontally),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MacCard(macName: String?, connection: String, onClick: () -> Unit) {
+    val connected = isConnected(connection)
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(Modifier.clickable(onClick = onClick).padding(20.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            IconBadge(R.drawable.ic_laptop, size = 48.dp,
+                container = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                content = if (connected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(macName ?: "Pair with your Mac", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (macName == null) {
+                    Text("Control this phone from your Mac's menu bar", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusDot(connected, Modifier.padding(top = 6.dp))
+                        Text(if (connected) "Connected" else connection, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SectionLabel("CONNECTIONS")
-                        Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                            Column {
-                                SettingRow("Wireless debugging", "Screen control over Wi-Fi", uiState.wifiDebuggingEnabled, uiState.hasPermission && uiState.developerOptionsEnabled && !isUpdating, viewModel::setWifiDebugging)
-                                HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                                SettingRow("USB debugging", "Connect with a USB cable", uiState.usbDebuggingEnabled, uiState.hasPermission && uiState.developerOptionsEnabled && !isUpdating, viewModel::setUsbDebugging)
-                            }
-                        }
-                        if (!uiState.developerOptionsEnabled) Text("Enable Developer options to change these settings.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SectionLabel("YOUR MAC")
-                        Card(onClick = { context.startActivity(Intent(context, PairingActivity::class.java)) },
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(20.dp)) {
-                            Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                DeviceMark(laptop = true)
-                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("Mac connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                    Text(connection, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                Text("→", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                    TextButton(onClick = openDeveloperSettings, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Open Android developer settings") }
-                    Text("Managed locally. No cloud account needed.", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
+// Files the Mac sent, newest first; refreshed whenever MediaStore Downloads changes.
 @Composable
-fun SectionLabel(text: String) {
-    Text(text, style = MaterialTheme.typography.labelMedium, letterSpacing = 1.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
-
-@Composable
-private fun SettingRow(title: String, description: String, checked: Boolean, enabled: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onCheckedChange).padding(20.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun FromMacSection() {
+    val context = LocalContext.current
+    var files by remember { mutableStateOf(emptyList<Received.Item>()) }
+    DisposableEffect(Unit) {
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { files = Received.recent(context) }
         }
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        observer.onChange(false)
+        context.contentResolver.registerContentObserver(MediaStore.Downloads.EXTERNAL_CONTENT_URI, true, observer)
+        onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
-}
-
-@Composable
-private fun PermissionWarning() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer
-        )
-    ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = contextString(R.string.permission_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onErrorContainer
-                )
+    Column {
+        SectionHeader("From your Mac")
+        GroupCard {
+            if (files.isEmpty()) {
+                ListItem(headlineContent = { Text("No files yet") },
+                    supportingContent = { Text("Use Send File or drop a file on the DevSwitch menu on your Mac.") },
+                    leadingContent = { Icon(painterResource(R.drawable.ic_file), contentDescription = null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent))
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = contextString(R.string.permission_message),
-                color = MaterialTheme.colorScheme.onErrorContainer
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.25f)
-            ) {
-                Text(
-                    text = contextString(R.string.permission_command),
-                    modifier = Modifier.padding(12.dp),
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer
-                )
+            files.forEach { file ->
+                val at = file.addedSeconds * 1000
+                val ago = if (System.currentTimeMillis() - at < DateUtils.MINUTE_IN_MILLIS) "Just now"
+                    else DateUtils.getRelativeTimeSpanString(at, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
+                NavRow(R.drawable.ic_file, file.name, "${Formatter.formatShortFileSize(context, file.size)} · $ago",
+                    trailing = R.drawable.ic_open_in_new) { Received.open(context, file.uri, file.mime, file.name) }
+                HorizontalDivider(Modifier.padding(start = 56.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
             }
+            if (files.isNotEmpty()) TextButton(onClick = { Received.showAll(context) }, Modifier.padding(start = 8.dp)) { Text("Show all in Downloads › DevSwitch") }
+        }
+        Text("To send to your Mac: the “Send clipboard to Mac” Quick Settings tile, or Share › Send to Mac.",
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun DeveloperCard(enabled: Boolean, canChange: Boolean, onChange: (Boolean) -> Unit) {
+    val container = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+    val content = if (enabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = container, contentColor = content) {
+        Row(Modifier.toggleable(value = enabled, enabled = canChange, role = Role.Switch, onValueChange = onChange).padding(24.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Development", style = MaterialTheme.typography.titleLarge)
+                Text(if (enabled) "On. Developer options are enabled on this phone." else "Off. Turn on to use debugging and Control Phone.",
+                    style = MaterialTheme.typography.bodyMedium, color = content.copy(alpha = 0.8f))
+            }
+            Switch(checked = enabled, onCheckedChange = null, enabled = canChange)
         }
     }
 }
 
 @Composable
-private fun ErrorCard(
-    error: MainUiError,
-    onRetry: () -> Unit
-) {
+private fun PermissionCard() {
+    val context = LocalContext.current
+    val command = stringResource(R.string.permission_command)
+    ProblemCard(stringResource(R.string.permission_title), stringResource(R.string.permission_message), actions = {
+        TextButton(onClick = {
+            context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb command", command))
+        }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer)) {
+            Icon(painterResource(R.drawable.ic_copy), contentDescription = null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Copy command")
+        }
+    }) {
+        Surface(Modifier.fillMaxWidth().padding(top = 4.dp), shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)) {
+            Text(command, Modifier.padding(12.dp), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ErrorCard(error: MainUiError, onRetry: () -> Unit) {
     val message = when (error) {
-        is MainUiError.ReadFailed -> contextString(R.string.error_read_settings)
-        is MainUiError.WriteFailed -> contextString(R.string.error_write_settings)
-        MainUiError.SystemSettingsUnavailable ->
-            contextString(R.string.error_system_settings_unavailable)
-
-        MainUiError.PermissionRequired -> contextString(R.string.error_permission_required)
+        is MainUiError.ReadFailed -> stringResource(R.string.error_read_settings)
+        is MainUiError.WriteFailed -> stringResource(R.string.error_write_settings)
+        MainUiError.SystemSettingsUnavailable -> stringResource(R.string.error_system_settings_unavailable)
+        MainUiError.PermissionRequired -> stringResource(R.string.error_permission_required)
     }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer
-        )
-    ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = contextString(R.string.error_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = message,
-                color = MaterialTheme.colorScheme.onTertiaryContainer
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-            Button(onClick = onRetry) {
-                Text(text = contextString(R.string.retry))
-            }
-        }
-    }
-}
-
-@Composable
-private fun contextString(resourceId: Int): String {
-    return androidx.compose.ui.res.stringResource(resourceId)
+    ProblemCard(stringResource(R.string.error_title), message, actions = {
+        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error,
+            contentColor = MaterialTheme.colorScheme.onError)) { Text(stringResource(R.string.retry)) }
+    })
 }

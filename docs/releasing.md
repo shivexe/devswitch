@@ -20,7 +20,7 @@ Outputs: `mac/build/DevSwitch.app` and `app/build/outputs/apk/debug/app-debug.ap
 ./scripts/package-mac.sh
 ```
 
-Produces a universal Apple Silicon/Intel ZIP and SHA-256 checksum in `dist/`. Packaging always ad-hoc signs with `codesign --sign -`. No notarization, Apple Developer membership, or Apple signing secret is required. Users approve downloaded apps through macOS Privacy & Security.
+Produces a universal Apple Silicon/Intel ZIP and SHA-256 checksum in `dist/`. Packaging ad-hoc signs by default. With `DEVSWITCH_SIGN_IDENTITY` set to a Developer ID Application identity and `DEVSWITCH_NOTARY_PROFILE` set to a `notarytool` keychain profile, it signs with the hardened runtime, notarizes, and staples the app.
 
 For a private local build only, `DEVSWITCH_SIGN_IDENTITY` can explicitly select a certificate. Builds never auto-select Keychain identities. Changing between certificate and ad-hoc signing can trigger a Keychain approval prompt; it does not migrate or delete pairing credentials.
 
@@ -42,7 +42,7 @@ An APK signed with a new key cannot replace a debug APK or another maintainer's 
 1. Use the `shivexe/devswitch` repository, or configure your own remote when maintaining a fork.
 2. Configure the Android secrets. Optionally set repository variable `ANDROID_VERSION_CODE_BASE` (default `100`) so base + workflow run number exceeds previously distributed version codes.
 3. Update `VERSION` and the changelog. Commit the source, then push a matching tag such as `v0.3.0` when ready to release.
-4. The workflow builds the signed APK and ad-hoc signed universal Mac ZIP, generates `SHA256SUMS`, and creates a **draft** release after both builds succeed.
+4. The workflow builds the signed APK and the Developer ID signed, notarized universal Mac ZIP (secrets `MAC_CERT_P12_BASE64`, `MAC_CERT_PASSWORD`, `NOTARY_KEY_P8_BASE64`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`), generates `SHA256SUMS`, and creates a **draft** release after both builds succeed.
 5. Review the artifacts and publish the draft from your GitHub account.
 
 No Apple account secrets are required. Branch CI runs Android build/lint and Mac packaging; it does not install apps on devices.

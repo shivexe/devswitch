@@ -7,7 +7,9 @@ final class BonjourDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDel
     private var services: [String: NetService] = [:]
     private(set) var failure: String?
     private(set) var endpoints: [String: String] = [:]
-    override init() {
+    private let type: String
+    init(type: String) {
+        self.type = type
         super.init()
     }
     func refresh() {
@@ -18,7 +20,7 @@ final class BonjourDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDel
         UserDefaults.standard.removeObject(forKey: "discovery.lastResolvedAt")
         browser = NetServiceBrowser()
         browser.delegate = self
-        browser.searchForServices(ofType: "_adb-tls-connect._tcp.", inDomain: "local.")
+        browser.searchForServices(ofType: type, inDomain: "local.")
     }
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
         guard browser === self.browser else { return }

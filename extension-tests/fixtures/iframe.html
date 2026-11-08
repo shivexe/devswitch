@@ -1,0 +1,4 @@
+<!doctype html><title>iframe</title>
+<p>Outer page</p>
+<iframe id="frame" width="400" height="150"></iframe>
+<script>document.getElementById('frame').src = `http://localhost:${location.port === '4401' ? 4402 : 4401}/fixtures/single.html`;</script>

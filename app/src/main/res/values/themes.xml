@@ -1,11 +1,13 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.DeveloperOptionsToggle" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.DeveloperOptionsToggle" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
         <item name="android:windowBackground">@color/app_background</item>
-        <item name="android:statusBarColor">@color/app_background</item>
-        <item name="android:navigationBarColor">@color/app_background</item>
         <item name="android:colorAccent">@color/app_primary</item>
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+    <!-- Share sheet and clipboard bridge: only a bottom sheet or a toast shows over the calling app. -->
+    <style name="Theme.DeveloperOptionsToggle.Translucent">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
     </style>
 </resources>

@@ -3,7 +3,6 @@ package com.himphen.playground.developeroptionstoggle.remote
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.Base64
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -14,6 +13,7 @@ import java.net.Socket
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -23,16 +23,17 @@ import javax.crypto.spec.SecretKeySpec
 object Protocol {
     private val random = SecureRandom()
     fun bytes(count: Int) = ByteArray(count).also(random::nextBytes)
-    fun encode(value: ByteArray): String = Base64.encodeToString(value, Base64.NO_WRAP)
+    // java.util.Base64 (not android.util) keeps this object usable in plain JVM unit tests.
+    fun encode(value: ByteArray): String = Base64.getEncoder().encodeToString(value)
     fun decode(value: String, size: Int = -1): ByteArray {
-        val data = Base64.decode(value, Base64.NO_WRAP)
+        val data = Base64.getDecoder().decode(value)
         require(size < 0 || data.size == size) { "Invalid key or nonce" }
         return data
     }
-    fun seal(value: JSONObject, key: ByteArray, aad: String): JSONObject {
-        require(key.size == 32)
+    // Production never passes iv; fixed nonces exist only for test vectors.
+    fun seal(value: JSONObject, key: ByteArray, aad: String, iv: ByteArray = bytes(12)): JSONObject {
+        require(key.size == 32 && iv.size == 12)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val iv = bytes(12)
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
         cipher.updateAAD(aad.toByteArray(Charsets.UTF_8))
         val output = cipher.doFinal(value.toString().toByteArray(Charsets.UTF_8))
@@ -47,6 +48,21 @@ object Protocol {
         val ciphertext = decode(value.getString("ciphertext"))
         require(ciphertext.size <= 32768)
         return JSONObject(String(cipher.doFinal(ciphertext + decode(value.getString("tag"), 16)), Charsets.UTF_8))
+    }
+    // Raw file-channel framing: nonce(12) || ciphertext || tag(16).
+    fun sealBytes(plain: ByteArray, key: ByteArray, aad: String, iv: ByteArray = bytes(12)): ByteArray {
+        require(key.size == 32 && iv.size == 12)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+        cipher.updateAAD(aad.toByteArray(Charsets.UTF_8))
+        return iv + cipher.doFinal(plain)
+    }
+    fun openBytes(data: ByteArray, key: ByteArray, aad: String): ByteArray {
+        require(key.size == 32 && data.size in 28..FILE_LIMIT)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, data, 0, 12))
+        cipher.updateAAD(aad.toByteArray(Charsets.UTF_8))
+        return cipher.doFinal(data, 12, data.size - 12)
     }
     fun comparison(key: ByteArray, nonce: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(key + nonce)
@@ -71,18 +87,26 @@ object Protocol {
         require(p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && p[1] in 16..31)) { "Use the same private Wi-Fi network" }
         return uri
     }
+    private const val FILE_LIMIT = 300 * 1024
     fun post(origin: String, path: String, payload: JSONObject): Pair<Int, JSONObject> {
+        val (code, body) = exchange(origin, path, payload.toString().toByteArray(Charsets.UTF_8), "application/json", 32768)
+        return code to JSONObject(String(body, Charsets.UTF_8).ifEmpty { "{}" })
+    }
+    // /v2/file/* chunks: raw sealed bytes, larger cap than polls.
+    fun postBytes(origin: String, path: String, body: ByteArray): Pair<Int, ByteArray> =
+        exchange(origin, path, body, "application/octet-stream", FILE_LIMIT)
+
+    private fun exchange(origin: String, path: String, bytes: ByteArray, type: String, limit: Int): Pair<Int, ByteArray> {
         val uri = origin(origin)
-        if (uri.host.startsWith('[')) return postLinkLocal(uri, path, payload)
+        if (uri.host.startsWith('[')) return postLinkLocal(uri, path, bytes, type, limit)
         val connection = uri.resolve(path).toURL().openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
             connection.instanceFollowRedirects = false
             connection.connectTimeout = 4000; connection.readTimeout = 4000
             connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            val bytes = payload.toString().toByteArray(Charsets.UTF_8)
-            require(bytes.size <= 32768)
+            connection.setRequestProperty("Content-Type", type)
+            require(bytes.size <= limit)
             connection.setFixedLengthStreamingMode(bytes.size)
             connection.outputStream.use { it.write(bytes) }
             val code = connection.responseCode
@@ -93,26 +117,25 @@ object Protocol {
                 while (true) {
                     val count = input.read(chunk)
                     if (count < 0) break
-                    require(buffer.size() + count <= 32768) { "Response too large" }
+                    require(buffer.size() + count <= limit) { "Response too large" }
                     buffer.write(chunk, 0, count)
                 }
             }
-            return code to JSONObject(buffer.toString("UTF-8").ifEmpty { "{}" })
+            return code to buffer.toByteArray()
         } finally { connection.disconnect() }
     }
 
     // Android's HttpURLConnection rejects IPv6 zone IDs. Use a scoped socket for
     // this local-only HTTP transport; payload authentication/encryption is unchanged.
-    private fun postLinkLocal(uri: URI, path: String, payload: JSONObject): Pair<Int, JSONObject> {
+    private fun postLinkLocal(uri: URI, path: String, bytes: ByteArray, type: String, limit: Int): Pair<Int, ByteArray> {
         require(path.startsWith('/') && path.length <= 160 && path.none { it <= ' ' || it == '\u007f' })
-        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
-        require(bytes.size <= 32768)
+        require(bytes.size <= limit)
         val address = InetAddress.getByName(uri.host.drop(1).dropLast(1))
         require(address.isLinkLocalAddress)
         return Socket().use { socket ->
             socket.soTimeout = 4000
             socket.connect(InetSocketAddress(address, uri.port), 4000)
-            val header = "POST $path HTTP/1.1\r\nHost: ${uri.rawAuthority}\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            val header = "POST $path HTTP/1.1\r\nHost: ${uri.rawAuthority}\r\nContent-Type: $type\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
             socket.getOutputStream().apply {
                 write(header.toByteArray(Charsets.US_ASCII)); write(bytes); flush()
             }
@@ -145,7 +168,7 @@ object Protocol {
             }
             check("transfer-encoding" !in headers)
             val length = headers["content-length"]?.toIntOrNull() ?: error("Missing HTTP length")
-            check(length in 0..32768) { "Response too large" }
+            check(length in 0..limit) { "Response too large" }
             val body = ByteArray(length)
             var offset = 0
             while (offset < length) {
@@ -153,7 +176,7 @@ object Protocol {
                 check(count > 0) { "Incomplete HTTP response" }
                 offset += count
             }
-            code to JSONObject(String(body, Charsets.UTF_8).ifEmpty { "{}" })
+            code to body
         }
     }
 }

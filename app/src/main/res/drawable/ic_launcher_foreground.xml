@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same mark as assets/devswitch-icon.svg, sized to the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M47,30h14a6,6 0 0 1 6,6v36a6,6 0 0 1 -6,6h-14a6,6 0 0 1 -6,-6v-36a6,6 0 0 1 6,-6z" />
+    <path android:fillColor="#9DB2D9" android:pathData="M51.5,32.5h5a0.75,0.75 0 0 1 0,1.5h-5a0.75,0.75 0 0 1 0,-1.5z" />
+    <path android:fillColor="#22C55E" android:pathData="M48.5,48.5h11a5.5,5.5 0 0 1 0,11h-11a5.5,5.5 0 0 1 0,-11z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M59.5,49.6a4.4,4.4 0 1 1 0,8.8a4.4,4.4 0 1 1 0,-8.8z" />
+</vector>

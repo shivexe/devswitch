@@ -13,13 +13,14 @@ import java.net.NetworkInterface
 // Android discovers its own ADB service, then reports the endpoint over the paired encrypted channel.
 // An advertisement is accepted only when its address belongs to this phone.
 @Suppress("DEPRECATION")
-class WirelessEndpoint(context: Context) {
+class WirelessEndpoint(context: Context, private val type: String = "_adb-tls-connect._tcp.") {
     private val manager = context.getSystemService(NsdManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private var listener: NsdManager.DiscoveryListener? = null
     private var generation = 0
     private var enabled = false
-    private var ownService = ""
+    @Volatile var ownService = ""
+        private set
     private val subscriptions = mutableMapOf<String, NsdManager.ServiceInfoCallback>()
     @Volatile var endpoint = ""
         private set
@@ -85,7 +86,7 @@ class WirelessEndpoint(context: Context) {
                 }
             }
             listener = discovery
-            try { manager.discoverServices("_adb-tls-connect._tcp.", NsdManager.PROTOCOL_DNS_SD, discovery) }
+            try { manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, discovery) }
             catch (_: Exception) { listener = null; enabled = false }
         }
     }

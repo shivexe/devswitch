@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 private struct CommandResult { let code: Int32; let output: String }
 
@@ -23,9 +24,9 @@ private func adbRun(_ arguments: [String], input: String? = nil, timeout: TimeIn
 
 @MainActor
 final class ScreenControl: ObservableObject {
-    @Published var needsConnectionAddress = false
-    private var pendingPairHost = ""
-    private var pendingPhoneID = ""
+    @Published var needsPairingAddress = false
+    @Published var trustLost = false
+    @Published var qrPayload: String?
     @Published var busy = false
     @Published var running = false
     @Published var message = ""
@@ -35,8 +36,11 @@ final class ScreenControl: ObservableObject {
     private var operation: Task<Void, Never>?
     private var generation = UUID()
     private var process: Process?
+    // Set when Control phone turned development on; ending the session turns it back off.
+    private weak var enabledBy: Controller?
     private let defaults = UserDefaults.standard
-    private let discovery = BonjourDiscovery()
+    private let discovery = BonjourDiscovery(type: "_adb-tls-connect._tcp.")
+    private let pairing = BonjourDiscovery(type: "_adb-tls-pairing._tcp.")
 
     init() {
         pairedPhoneID = defaults.string(forKey: "screen.phoneID")
@@ -91,79 +95,100 @@ final class ScreenControl: ObservableObject {
         guard result.code == 0 else { return "" }
         return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    func pair(address: String, code: String, phoneID: String, connectionEndpoint: String? = nil) {
-        guard !busy, !running else { return }
-        guard let endpoint = Self.endpoint(address), code.count == 6, code.allSatisfy({ $0.isASCII && $0.isNumber }) else {
-            message = "Enter the IP:port and six-digit code from Pair device with pairing code on your phone."; return
-        }
-        let target = "\(endpoint.host):\(endpoint.port)"
-        let token = UUID(); generation = token; busy = true
-        message = "Pairing with Android…"
+    // Android's "Pair device with QR code" scans this payload, then advertises an
+    // _adb-tls-pairing service named S; adb pair uses P as the pairing code.
+    func pairWithQR(controller: Controller) {
+        guard !busy, !running, let phoneID = controller.phone?.id else { return }
+        let alphabet = Array("abcdefghijklmnopqrstuvwxyz0123456789")
+        let random = { (count: Int) in String((0..<count).map { _ in alphabet.randomElement()! }) }
+        let name = "devswitch-" + random(8), password = random(12)
+        let token = UUID(); generation = token; busy = true; needsPairingAddress = false
+        qrPayload = "WIFI:T:ADB;S:\(name);P:\(password);;"
+        message = "On your phone: Wireless debugging → Pair device with QR code, then scan this code."
+        pairing.refresh()
         operation = Task { [self] in
-            defer { if generation == token { busy = false } }
+            defer { if generation == token { busy = false; qrPayload = nil } }
             do {
-                let result = try await adbRun(["pair", target], input: code + "\n", timeout: 25)
-                try Task.checkCancellation()
-                guard result.code == 0, result.output.contains("Successfully paired") else {
-                    throw AppError.message("Pairing failed. Keep the pairing-code dialog open and use its current address and code.")
+                var service: String?
+                for _ in 0..<240 where service == nil {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    let status = controller.status
+                    service = pairing.endpoints[name] ?? (status?.pairingName == name ? status?.pairingEndpoint : nil)
                 }
-                pendingPairHost = endpoint.host; pendingPhoneID = phoneID
-                // Prefer the endpoint reported through the authenticated companion channel.
-                if connectionEndpoint == nil { discovery.refresh() }
-                for _ in 0..<10 {
-                    try Task.checkCancellation()
-                    let discovered: [(name: String, endpoint: String)]
-                    if let reported = connectionEndpoint, Self.endpoint(reported)?.host == endpoint.host {
-                        discovered = [("paired phone", reported)]
-                    } else {
-                        discovered = try await services().filter { Self.endpoint($0.endpoint)?.host == endpoint.host }
-                    }
-                    if discovered.count == 1, let service = discovered.first {
-                        let connected = try await adbRun(["connect", service.endpoint])
-                        if connected.code == 0 {
-                            let value = try await property("ro.serialno", device: service.endpoint)
-                            guard !value.isEmpty, value.count <= 128, value.rangeOfCharacter(from: .controlCharacters) == nil else { continue }
-                            try Task.checkCancellation()
-                            guard generation == token else { return }
-                            needsConnectionAddress = false
-                            serial = value; pairedPhoneID = phoneID; lastEndpoint = service.endpoint
-                            defaults.set(value, forKey: "screen.serial")
-                            defaults.set(phoneID, forKey: "screen.phoneID")
-                            defaults.set(service.endpoint, forKey: "screen.endpoint")
-                            message = "Wireless control paired. You can now use Control phone."
-                            return
-                        }
-                    }
-                    try await Task.sleep(nanoseconds: 1_000_000_000)
-                }
-                needsConnectionAddress = true
-                message = "Pairing succeeded. Close the code dialog on your phone and enter IP address & Port from the main Wireless debugging screen."
+                guard let service else { throw AppError.message("The QR code expired. Show a new code and scan again.") }
+                qrPayload = nil
+                try await pair(service, code: password, phoneID: phoneID, controller: controller, token: token)
             } catch is CancellationError { }
             catch { if generation == token { message = error.localizedDescription } }
         }
     }
-    func finishPair(address: String) {
-        guard !busy, let endpoint = Self.endpoint(address), endpoint.host == pendingPairHost else {
-            message = "Use the connection IP:port from the same phone's Wireless debugging screen."; return
+    // The pairing-code dialog advertises the same service; find it so only the code is typed.
+    func pairWithCode(_ code: String, address: String?, controller: Controller) {
+        guard !busy, !running, let phoneID = controller.phone?.id else { return }
+        guard code.count == 6, code.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+            message = "Enter the six-digit code from Pair device with pairing code on your phone."; return
         }
-        let target = "\(endpoint.host):\(endpoint.port)"
+        let manual = address.flatMap { Self.endpoint($0) }.map { "\($0.host):\($0.port)" }
         let token = UUID(); generation = token; busy = true
+        message = "Looking for your phone's pairing service…"
+        if manual == nil { pairing.refresh() }
         operation = Task { [self] in
             defer { if generation == token { busy = false } }
             do {
-                _ = try await adbRun(["connect", target])
-                let value = try await property("ro.serialno", device: target)
-                try Task.checkCancellation()
-                guard generation == token, !value.isEmpty, value.count <= 128, value.rangeOfCharacter(from: .controlCharacters) == nil else {
-                    throw AppError.message("Could not connect. Use the port on the main Wireless debugging screen, not the pairing-code port.")
+                var service = manual
+                for _ in 0..<40 where service == nil {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    let lanIPv4 = controller.status?.lanIPv4
+                    let found = pairing.endpoints.values.filter { lanIPv4 == nil || Self.endpoint($0)?.host == lanIPv4 }
+                    if let reported = controller.status?.pairingEndpoint, Self.endpoint(reported) != nil { service = reported }
+                    else if found.count == 1 { service = found[0] }
                 }
-                serial = value; pairedPhoneID = pendingPhoneID; lastEndpoint = target
-                defaults.set(value, forKey: "screen.serial"); defaults.set(pendingPhoneID, forKey: "screen.phoneID")
-                defaults.set(target, forKey: "screen.endpoint")
-                needsConnectionAddress = false; message = "Wireless control paired. You can now use Control phone."
+                guard let service else {
+                    needsPairingAddress = true
+                    throw AppError.message("Could not find your phone's pairing service. Enter the IP address & Port shown in the pairing-code dialog.")
+                }
+                try await pair(service, code: code, phoneID: phoneID, controller: controller, token: token)
             } catch is CancellationError { }
             catch { if generation == token { message = error.localizedDescription } }
         }
+    }
+    private func pair(_ service: String, code: String, phoneID: String, controller: Controller, token: UUID) async throws {
+        guard let host = Self.endpoint(service)?.host else { throw AppError.message("Invalid pairing address.") }
+        message = "Pairing with Android…"
+        let result = try await adbRun(["pair", service], input: code + "\n", timeout: 25)
+        try Task.checkCancellation()
+        guard result.code == 0, result.output.contains("Successfully paired") else {
+            throw AppError.message("Pairing failed. Keep the pairing screen open on your phone and try again.")
+        }
+        needsPairingAddress = false
+        message = "Paired. Connecting to your phone…"
+        for attempt in 0..<10 {
+            try Task.checkCancellation()
+            // Prefer the endpoint reported through the authenticated companion channel.
+            let discovered: [(name: String, endpoint: String)]
+            if let reported = controller.status?.wifiEndpoint, Self.endpoint(reported)?.host == host {
+                discovered = [("paired phone", reported)]
+            } else {
+                if attempt == 0 { discovery.refresh() }
+                discovered = try await services().filter { Self.endpoint($0.endpoint)?.host == host }
+            }
+            if discovered.count == 1, let service = discovered.first,
+               try await adbRun(["connect", service.endpoint]).code == 0 {
+                let value = try await property("ro.serialno", device: service.endpoint)
+                if !value.isEmpty, value.count <= 128, value.rangeOfCharacter(from: .controlCharacters) == nil {
+                    try Task.checkCancellation()
+                    guard generation == token else { return }
+                    serial = value; pairedPhoneID = phoneID; lastEndpoint = service.endpoint; trustLost = false
+                    defaults.set(value, forKey: "screen.serial")
+                    defaults.set(phoneID, forKey: "screen.phoneID")
+                    defaults.set(service.endpoint, forKey: "screen.endpoint")
+                    message = "Wireless control paired. You can now use Control phone."
+                    return
+                }
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw AppError.message("Paired, but could not reach the phone's wireless debugging. Keep Wireless debugging on, then pair again.")
     }
     func start(controller: Controller) {
         guard !busy, !running, controller.online, controller.pending == nil else { return }
@@ -176,8 +201,12 @@ final class ScreenControl: ObservableObject {
                 // Resolve prerequisites before changing anything on the phone.
                 let adbPath = try Dependencies.locate("adb")
                 let scrcpyPath = try Dependencies.locate("scrcpy")
+                guard controller.status?.permission == true else {
+                    throw AppError.message("DevSwitch on your phone lost its settings permission. Run the adb grant command from the README once over USB.")
+                }
                 if controller.status?.developer != true || controller.status?.usb != true || controller.status?.wifi != true {
                     controller.send("enable")
+                    enabledBy = controller
                     for _ in 0..<30 {
                         try await Task.sleep(nanoseconds: 1_000_000_000)
                         if controller.pending == nil { break }
@@ -201,8 +230,9 @@ final class ScreenControl: ObservableObject {
                     // adb connect can exit successfully even when the connection failed.
                     if output.contains("failed") || output.contains("cannot") || result.code != 0 {
                         // An ADB server started by another app keeps that app's Local Network
-                        // access. Restart it once so it runs under DevSwitch's permission.
-                        if output.contains("no route to host") && !restartedServer {
+                        // access. Restart it once so it runs under DevSwitch's permission. Never during
+                        // the IPv6 attempt: restarting drops every other ADB session on this Mac.
+                        if output.contains("no route to host") && !restartedServer && !fallbackAvailable {
                             restartedServer = true
                             message = "Restarting ADB…"
                             _ = try await adbRun(["kill-server"], timeout: 5)
@@ -215,14 +245,19 @@ final class ScreenControl: ObservableObject {
                         if !fallbackAvailable && (output.contains("no route to host") || output.contains("permission denied") || output.contains("operation not permitted")) {
                             throw AppError.message("ADB cannot reach your phone. Check Mac Local Network access for DevSwitch and the app that started ADB, and confirm both devices use the same Wi-Fi. Your pairing is still saved.")
                         }
-                        connectionFailure = "Found your phone, but ADB could not connect: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240)). Retry after checking Wireless debugging on the phone."
+                        // The port answers but ADB is refused: Android dropped this Mac's authorization.
+                        if await Self.reachable(endpoint) {
+                            trustLost = true
+                            throw AppError.message("Your phone forgot this Mac. Choose Re-pair wireless control and scan the QR code.")
+                        }
+                        connectionFailure = "Found your phone, but ADB could not connect:\(result.output.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240)). Retry after checking Wireless debugging on the phone."
                         return false
                     }
                     guard try await property("ro.serialno", device: endpoint) == serial else {
                         connectionFailure = "ADB connected, but could not verify your paired phone. Check that the phone is online and retry."
                         return false
                     }
-                    lastEndpoint = endpoint
+                    lastEndpoint = endpoint; trustLost = false
                     defaults.set(endpoint, forKey: "screen.endpoint")
                     return true
                 }
@@ -260,7 +295,9 @@ final class ScreenControl: ObservableObject {
                     discovery.refresh()
                     try await Task.sleep(nanoseconds: 1_000_000_000)
                 }
-                guard let selected else { throw AppError.message(connectionFailure ?? discovery.failure ?? "Could not find the phone's current wireless connection. Keep both devices on the same Wi-Fi and retry Control phone. Your saved pairing has not been removed.") }
+                guard let selected else { throw AppError.message(connectionFailure ?? discovery.failure ?? ((controller.status?.wifiEndpoint ?? "").isEmpty
+                    ? "Wireless debugging is on, but Android isn't advertising it. Open Wireless debugging on the phone and allow this Wi-Fi network, then retry."
+                    : "Could not find the phone's current wireless connection. Keep both devices on the same Wi-Fi and retry Control phone. Your saved pairing has not been removed.")) }
                 try Task.checkCancellation()
                 guard generation == token else { return }
                 let process = Process()
@@ -274,22 +311,53 @@ final class ScreenControl: ObservableObject {
                     Task { @MainActor in
                         guard let self, self.process === p else { return }
                         self.running = false; self.process = nil
+                        self.disableIfEnabled()
                         self.message = p.terminationStatus == 0 ? "Screen sharing stopped." : "Screen sharing ended. Check the phone connection and try again."
                     }
                 }
                 try process.run(); self.process = process; running = true
                 message = "Screen control is running. Closing its window stops sharing."
             } catch is CancellationError { }
-            catch { if generation == token { message = error.localizedDescription } }
+            catch { if generation == token { message = error.localizedDescription; disableIfEnabled() } }
         }
     }
     func stop() {
         generation = UUID(); operation?.cancel(); operation = nil; busy = false
         if let process, process.isRunning { process.terminate() }
-        process = nil; running = false; message = "Screen sharing stopped."
+        process = nil; running = false; qrPayload = nil; message = "Screen sharing stopped."
+        disableIfEnabled()
+    }
+    // Queued even while the phone is away; the long TTL applies it when the phone returns.
+    private func disableIfEnabled() {
+        guard let controller = enabledBy else { return }
+        enabledBy = nil
+        controller.enqueue(OutgoingCommand("disable", ttl: 600))
+    }
+    nonisolated static func reachable(_ text: String) async -> Bool {
+        guard let parsed = endpoint(text), let port = NWEndpoint.Port(rawValue: UInt16(parsed.port)) else { return false }
+        let host = parsed.host.hasPrefix("[") ? String(parsed.host.dropFirst().dropLast()) : parsed.host
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let queue = DispatchQueue(label: "dev.notsg.devswitch.probe")
+        return await withCheckedContinuation { continuation in
+            // The state handler and the timeout both run on `queue`, so `done` is never raced.
+            var done = false
+            func finish(_ value: Bool) {
+                guard !done else { return }
+                done = true; connection.cancel(); continuation.resume(returning: value)
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(true)
+                case .failed, .waiting, .cancelled: finish(false)
+                default: break
+                }
+            }
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 2) { finish(false) }
+        }
     }
     func forget() {
-        stop(); needsConnectionAddress = false; pendingPairHost = ""; pendingPhoneID = ""; pairedPhoneID = nil; serial = ""; lastEndpoint = ""
+        stop(); needsPairingAddress = false; trustLost = false; pairedPhoneID = nil; serial = ""; lastEndpoint = ""
         for key in ["screen.phoneID", "screen.serial", "screen.endpoint"] { defaults.removeObject(forKey: key) }
         message = ""
         // Android's separate authorization can be revoked under Wireless debugging → Paired devices.

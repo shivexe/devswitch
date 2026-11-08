@@ -17,9 +17,10 @@ struct SyncCrypto {
         return Data(bytes)
     }
 
-    static func seal<T: Encodable>(_ value: T, key: Data, aad: String) throws -> Envelope {
+    // Production never passes a nonce; fixed nonces exist only for test vectors.
+    static func seal<T: Encodable>(_ value: T, key: Data, aad: String, nonce: AES.GCM.Nonce? = nil) throws -> Envelope {
         guard key.count == 32 else { throw AppError.message("Invalid encryption key.") }
-        let box = try AES.GCM.seal(JSONEncoder().encode(value), using: SymmetricKey(data: key), authenticating: Data(aad.utf8))
+        let box = try AES.GCM.seal(JSONEncoder().encode(value), using: SymmetricKey(data: key), nonce: nonce ?? AES.GCM.Nonce(), authenticating: Data(aad.utf8))
         return Envelope(nonce: box.nonce.withUnsafeBytes { Data($0).base64EncodedString() }, ciphertext: box.ciphertext.base64EncodedString(), tag: box.tag.base64EncodedString())
     }
 
@@ -30,6 +31,19 @@ struct SyncCrypto {
         let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: nonce), ciphertext: ciphertext, tag: tag)
         let plaintext = try AES.GCM.open(box, using: SymmetricKey(data: key), authenticating: Data(aad.utf8))
         return try JSONDecoder().decode(type, from: plaintext)
+    }
+
+    // Raw file-channel framing: nonce(12) || ciphertext || tag(16).
+    static func sealBytes(_ plaintext: Data, key: Data, aad: String, nonce: AES.GCM.Nonce? = nil) throws -> Data {
+        guard key.count == 32 else { throw AppError.message("Invalid encryption key.") }
+        let box = try AES.GCM.seal(plaintext, using: SymmetricKey(data: key), nonce: nonce ?? AES.GCM.Nonce(), authenticating: Data(aad.utf8))
+        guard let combined = box.combined else { throw AppError.message("Invalid encrypted message.") }
+        return combined
+    }
+
+    static func openBytes(_ data: Data, key: Data, aad: String) throws -> Data {
+        guard key.count == 32, (28...300 * 1024).contains(data.count) else { throw AppError.message("Invalid encrypted message.") }
+        return try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: SymmetricKey(data: key), authenticating: Data(aad.utf8))
     }
 
     static func comparison(secret: Data, nonce: Data) -> String {

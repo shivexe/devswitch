@@ -142,6 +142,8 @@ dependencies {
 
 
     testImplementation(libs.junit)
+    // Real org.json for JVM unit tests; android.jar only ships stubs.
+    testImplementation(libs.org.json)
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.junit)

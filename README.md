@@ -11,13 +11,13 @@ Requires macOS 14+. Wireless control requires Android 11+; automatic port update
    brew install --cask android-platform-tools
    brew install scrcpy
    ```
-2. Download the APK and Mac ZIP from [Releases](https://github.com/shivexe/devswitch/releases). Move `DevSwitch.app` to Applications and install the APK on your phone. The Mac app is ad-hoc signed, not notarized: after attempting to open it, use **System Settings → Privacy & Security → Open Anyway** if blocked.
+2. Download the APK and Mac ZIP from [Releases](https://github.com/shivexe/devswitch/releases). Move `DevSwitch.app` to Applications and install the APK on your phone. The Mac app is signed with a Developer ID and notarized by Apple, so it opens normally.
 3. Enable USB debugging, connect the phone once, accept the authorization prompt, then run:
    ```sh
    adb shell pm grant com.himphen.playground.developeroptionstoggle android.permission.WRITE_SECURE_SETTINGS
    ```
 4. Put both devices on the same Wi-Fi. Choose **Pair phone** on the Mac, scan its QR from **Mac connection** on Android, compare the codes, and approve on the Mac.
-5. On the Mac, **Enable development**. On Android, open **Wireless debugging**, allow your Wi-Fi network, then **Pair device with pairing code**. Enter that address and code under the Mac's **Connection settings → Wireless control**.
+5. On the Mac, **Enable development**. On Android, open **Wireless debugging** and allow your Wi-Fi network. In the Mac's **Connection settings → Wireless control**, choose **Show pairing QR code**, then scan it with **Pair device with QR code** on Android.
 
 Unplug USB. **Control phone** enables development and opens the screen. **Disable development** stops sharing and turns off developer options, USB debugging, and wireless debugging.
 
