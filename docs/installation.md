@@ -16,7 +16,7 @@ brew install --cask android-platform-tools
 brew install scrcpy
 ```
 
-Download the APK and Mac ZIP from this repository's Releases. Move the unzipped Mac app to `/Applications`. Attempt to open it. If blocked, choose **System Settings → Privacy & Security → Open Anyway**, then confirm. Releases are ad-hoc signed and not notarized. [Apple's instructions](https://support.apple.com/102445).
+Download the APK and Mac ZIP from this repository's Releases. Move the unzipped Mac app to `/Applications`. Releases are Developer ID signed and notarized, so the app opens without a Gatekeeper warning.
 
 On Android, enable Developer options and USB debugging, connect the cable, and accept **Allow USB debugging?** for your Mac. Run `adb devices`; the phone should say `device`, not `unauthorized`. Install the downloaded APK with `adb install /path/to/DevSwitch-VERSION-android.apk`, then grant permission:
 
