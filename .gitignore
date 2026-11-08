@@ -178,3 +178,8 @@ extension-tests/node_modules/
 extension-tests/test-results/
 extension-tests/playwright-report/
 scripts/e2e/.state/
+
+# Local working notes
+.archify/
+piid-*.md
+research-*.md
