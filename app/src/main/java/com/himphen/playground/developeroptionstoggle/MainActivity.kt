@@ -21,12 +21,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // Resume an existing, unpaused pairing when opening after an app update.
-        try {
-            if (!getSharedPreferences("devswitch", MODE_PRIVATE).getBoolean("paused", false) &&
-                com.himphen.playground.developeroptionstoggle.remote.PairStore.load(this) != null) {
-                com.himphen.playground.developeroptionstoggle.remote.RemoteService.start(this)
-            }
-        } catch (_: Exception) { /* The connection screen provides an explicit Resume action. */ }
+        com.himphen.playground.developeroptionstoggle.remote.RemoteService.resume(this)
         setContent {
             DeveloperOptionsToggleTheme {
                 Surface(

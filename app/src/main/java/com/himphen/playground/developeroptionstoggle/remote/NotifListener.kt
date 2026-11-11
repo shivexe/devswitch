@@ -64,6 +64,8 @@ class NotifListener : NotificationListenerService() {
         RemoteService.statusExtras["listenerConnected"] = true
         SmsSender.refreshSims(this)
         Outbox.kick()
+        // Android rebinds this listener after the process is killed, which makes it a restart path for the Mac connection.
+        RemoteService.resume(this)
     }
 
     override fun onListenerDisconnected() {
