@@ -26,6 +26,22 @@ class RemoteService : Service() {
         /** Status fields filled in by feature services; merged into every status. */
         val statusExtras: MutableMap<String, Any> = ConcurrentHashMap(mapOf("ringing" to false, "listenerConnected" to false, "sims" to JSONArray()))
         fun start(context: Context) = context.startForegroundService(Intent(context, RemoteService::class.java))
+        const val WATCHDOG = "com.himphen.playground.developeroptionstoggle.WATCHDOG"
+        /** Restarts the connection unless the user paused it; re-arms the watchdog that calls this again. */
+        fun resume(context: Context) {
+            try {
+                if (PairStore.load(context) == null || context.getSharedPreferences("devswitch", Context.MODE_PRIVATE).getBoolean("paused", false)) return
+                scheduleWatchdog(context, 15 * 60000L)
+                start(context)
+            } catch (_: Exception) { connectionState = "Open DevSwitch to resume Mac control" }
+        }
+        // OEM killers can stop the process without a force stop; this alarm survives that and brings the service back.
+        fun scheduleWatchdog(context: Context, delayMs: Long) {
+            val alarm = PendingIntent.getBroadcast(context, 2, Intent(context, BootReceiver::class.java).setAction(WATCHDOG),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            context.getSystemService(AlarmManager::class.java)
+                .setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delayMs, alarm)
+        }
     }
     class Session(val origin: String, val deviceId: String, val key: ByteArray)
     @Volatile private var running = false
@@ -76,9 +92,11 @@ class RemoteService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
             else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         running = true
+        scheduleWatchdog(this, 15 * 60000L)
         worker = Thread({ loop() }, "DevSwitch connection").also { it.start() }
         return START_STICKY
     }
+    override fun onTaskRemoved(rootIntent: Intent?) = scheduleWatchdog(this, 5000)
     private fun status(link: LocalLink.Link?): JSONObject {
         val wifi = Settings.Global.getInt(contentResolver, "adb_wifi_enabled", 0) == 1
         // NSD only needs a nudge when Wireless debugging flips; its callbacks keep the endpoints current.
@@ -255,8 +273,6 @@ class RemoteService : Service() {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        try { if (PairStore.load(context) != null && !context.getSharedPreferences("devswitch", Context.MODE_PRIVATE).getBoolean("paused", false)) RemoteService.start(context) }
-        catch (_: Exception) { RemoteService.connectionState = "Open DevSwitch to resume Mac control" }
+        if (intent.action in setOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED, RemoteService.WATCHDOG)) RemoteService.resume(context)
     }
 }
