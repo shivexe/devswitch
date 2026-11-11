@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Room creates generated databases (WorkManager's, via Glance) by reflection; R8 full mode strips their constructors.
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
