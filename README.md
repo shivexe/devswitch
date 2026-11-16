@@ -2,6 +2,18 @@
 
 Control your Android phone from the Mac menu bar. Switch developer settings on or off, mirror the screen, and use your mouse and keyboard over Wi-Fi. No root or cloud account.
 
+**Website and 30-second demo:** [devswitch.notsg.in](https://devswitch.notsg.in)
+
+## What it does
+
+- **Control:** mirror the phone in a window and use it with your mouse and keyboard (scrcpy over wireless debugging).
+- **Development switch:** turn developer options, USB debugging and wireless debugging on, and off again in reverse order.
+- **Codes:** verification codes from SMS and notifications appear on the Mac. Press ⌃⌥V to type one, or let the Helium extension fill it. Codes stay in memory and clear after 90 seconds.
+- **Calls:** an incoming call panel with Decline and Silence.
+- **Notifications:** phone notifications as Mac banners with reply, dismiss and mute.
+- **Messages, files, clipboard:** send SMS from the Mac, send files both ways, share links to the Mac, and sync the clipboard.
+- **Find and status:** ring the phone, and see its battery and network in the menu.
+
 ## Install
 
 Requires macOS 14+. Wireless control requires Android 11+; automatic port updates use Android 14+. Verified on iQOO Z6 Pro / Android 14.
@@ -18,6 +30,8 @@ Requires macOS 14+. Wireless control requires Android 11+; automatic port update
    ```
 4. Put both devices on the same Wi-Fi. Choose **Pair phone** on the Mac, scan its QR from **Mac connection** on Android, compare the codes, and approve on the Mac.
 5. On the Mac, **Enable development**. On Android, open **Wireless debugging** and allow your Wi-Fi network. In the Mac's **Connection settings → Wireless control**, choose **Show pairing QR code**, then scan it with **Pair device with QR code** on Android.
+
+6. Optional: allow notification access and the SMS and phone permissions DevSwitch asks for on Android. On the Mac, give DevSwitch Accessibility access for ⌃⌥V, and install the Helium extension from **Settings → Browser autofill**.
 
 Unplug USB. **Control phone** enables development and opens the screen. **Disable development** stops sharing and turns off developer options, USB debugging, and wireless debugging.
 
